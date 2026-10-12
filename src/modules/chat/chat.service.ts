@@ -44,6 +44,16 @@ export class ChatService {
   private readonly logger = new Logger(ChatService.name);
 
   /**
+   * Socket.IO server registered by ChatGateway.afterInit so REST-initiated
+   * sends (broadcast) can fan out `new_message` to every connected member of
+   * the target rooms — avoids a circular provider dependency (the gateway
+   * already injects this service).
+   */
+  private gatewayServer: {
+    to(room: string): { emit(event: string, payload: unknown): unknown };
+  } | null = null;
+
+  /**
    * FIX (Room Access): role slugs that may enter ANY chat room without an
    * enrollment check. Matches the slugs produced by JwtStrategy and seeded
    * in the `roles` table.
@@ -175,6 +185,31 @@ export class ChatService {
     if (!room.group_id) throw new BadRequestException('Room is not linked to a study group');
     await this.syncGroupChatRoom(room.group_id);
     return { room_id: roomId, synced: true };
+  }
+
+  /**
+   * Section-level sync: a "section" is modeled as a study group (Group row) in
+   * this schema — every ACTIVE student, the teacher and the substitute are
+   * seated in the section's chat room in ONE call. Invoked by the attendance
+   * save endpoint (POST /attendances/sessions/:sessionId/bulk-mark) so the
+   * chat roster is always fresh right after attendance is taken, and emits
+   * `room_members_updated` to the room so open clients refresh their member
+   * list without a page reload.
+   */
+  async syncSectionChatRoom(sectionId: string) {
+    const group = await this.groupRepo.findOne({ where: { id: sectionId } });
+    if (!group) throw new NotFoundException('Section (study group) not found');
+
+    const room = await this.syncGroupChatRoom(group.id);
+    const memberCount = await this.memberRepo.count({
+      where: { room_id: room.id, is_banned: false },
+    });
+    this.emitToRoom(room.id, 'room_members_updated', {
+      room_id: room.id,
+      group_id: group.id,
+      member_count: memberCount,
+    });
+    return { section_id: group.id, room_id: room.id, member_count: memberCount };
   }
 
   async findRooms(userId: string) {
@@ -778,5 +813,151 @@ export class ChatService {
     for (const e of enrollments) if (e.group_id) ids.add(e.group_id);
 
     return [...ids];
+  }
+
+  // ─── GROUP DIRECTORY & BROADCAST (teacher ↔ group/section members) ───
+
+  /**
+   * Called by ChatGateway.afterInit — gives REST handlers a handle on the
+   * Socket.IO server without injecting the gateway (which injects this
+   * service and would create a cycle).
+   */
+  registerGatewayServer(server: {
+    to(room: string): { emit(event: string, payload: unknown): unknown };
+  }): void {
+    this.gatewayServer = server;
+  }
+
+  private emitToRoom(roomId: string, event: string, payload: unknown): void {
+    try {
+      this.gatewayServer?.to(roomId).emit(event, payload);
+    } catch (err: any) {
+      this.logger.warn(`Socket emit failed for room ${roomId}: ${err?.message ?? err}`);
+    }
+  }
+
+  /**
+   * The group/section directory for the calling user:
+   *  - staff (super_admin/admin/moderator/academic) → every group,
+   *  - teachers/substitutes                       → groups they teach,
+   *  - students                                   → groups they are enrolled in.
+   * Each row carries the linked chat room id and its live member count so
+   * teachers can see who is in each section and students can see their peers.
+   */
+  async getMyChatGroups(userId: string) {
+    const staff = await this.isStaff(userId);
+
+    if (!staff) {
+      const eligibleIds = await this.findEligibleGroupIds(userId);
+      if (!eligibleIds.length) return [];
+      return this.buildChatGroupRows(userId, eligibleIds, false);
+    }
+
+    const allGroups = await this.groupRepo.find({ order: { created_at: 'DESC' } as any });
+    return this.buildChatGroupRows(userId, allGroups.map((g) => g.id), true);
+  }
+
+  private async buildChatGroupRows(userId: string, groupIds: string[], staff: boolean) {
+    const groups = await this.groupRepo.find({
+      where: { id: In(groupIds) },
+      relations: ['course'],
+    });
+
+    const rows: Array<{
+      id: string;
+      name: string;
+      course_name: string | null;
+      member_count: number;
+      room_id: string;
+      my_role: 'teacher' | 'student' | 'staff';
+    }> = [];
+
+    for (const g of groups) {
+      // ensureGroupChatRoom is idempotent — creates the room on first access.
+      const room = await this.ensureGroupChatRoom(g.id);
+      const memberCount = await this.memberRepo.count({
+        where: { room_id: room.id, is_banned: false },
+      });
+      const teaches = g.teacher_id === userId || g.substitute_teacher_id === userId;
+      rows.push({
+        id: g.id,
+        name: g.name,
+        course_name: g.course?.name ?? null,
+        member_count: memberCount,
+        room_id: room.id,
+        my_role: teaches ? 'teacher' : staff ? 'staff' : 'student',
+      });
+    }
+
+    return rows;
+  }
+
+  /**
+   * Broadcast one message to every member of one or more groups/sections at
+   * once. Teachers/substitutes may only target groups they teach; staff may
+   * target anything. The compliance scan runs ONCE before the fan-out so a
+   * violating broadcast is never sent partially and never escalates one
+   * strike per target room.
+   */
+  async broadcastToGroups(userId: string, body: string, groupIds?: string[]) {
+    const text = (body ?? '').trim();
+    if (!text) throw new BadRequestException('Message body is required');
+    if (text.length > 4000) throw new BadRequestException('Message is too long (max 4000 characters)');
+
+    // Resolve targets (teachers: only groups they teach; staff: anything).
+    const staff = await this.isStaff(userId);
+    const taught = await this.groupRepo.find({
+      where: [{ teacher_id: userId }, { substitute_teacher_id: userId }],
+    });
+    const taughtIds = new Set(taught.map((g) => g.id));
+
+    let targetIds: string[];
+    if (groupIds?.length) {
+      if (!staff) {
+        const denied = groupIds.filter((id) => !taughtIds.has(id));
+        if (denied.length) {
+          throw new ForbiddenException('You can only broadcast to groups/sections you teach');
+        }
+      }
+      targetIds = [...new Set(groupIds)];
+    } else {
+      targetIds = staff ? (await this.groupRepo.find()).map((g) => g.id) : [...taughtIds];
+    }
+    if (!targetIds.length) throw new BadRequestException('No groups selected for this broadcast');
+
+    // Single pre-send compliance scan — one broadcast = at most one violation.
+    const scan = this.scanMessage(text);
+    if (scan?.violation) {
+      try {
+        const firstRoom = await this.ensureGroupChatRoom(targetIds[0]);
+        await this.recordViolation(null, firstRoom.id, userId, scan.rule, text, scan.action);
+      } catch {
+        // Logging must never mask the rejection below.
+      }
+      throw new ForbiddenException(
+        'Sharing personal contact info is not allowed. This attempt has been logged.',
+      );
+    }
+
+    const sent: string[] = [];
+    const failed: Array<{ group_id: string; error: string }> = [];
+
+    for (const groupId of targetIds) {
+      try {
+        // Re-sync seats the teacher (if somehow missing) then saves the
+        // message through the normal enforcement path (membership/mute).
+        const room = await this.syncGroupChatRoom(groupId);
+        const message = await this.saveMessage({ room_id: room.id, body: text }, userId);
+        const full = await this.getMessageWithSender(message.id);
+        this.emitToRoom(room.id, 'new_message', full);
+        sent.push(room.id);
+      } catch (err: any) {
+        failed.push({ group_id: groupId, error: err?.message ?? 'Failed to send' });
+      }
+    }
+
+    if (!sent.length && failed.length) throw new ForbiddenException(failed[0].error);
+
+    return { sent: sent.length, total: targetIds.length, room_ids: sent, failed };
   }
 }

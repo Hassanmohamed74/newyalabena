@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { createHmac, timingSafeEqual } from 'crypto';
@@ -11,9 +11,12 @@ import { AttendanceStatus } from '../../common/enums/attendance-status.enum';
 import { CheckInMethod } from '../../common/enums/check-in-method.enum';
 import { MarkAttendanceDto } from './dto/mark-attendance.dto';
 import { CheckInDto } from './dto/check-in.dto';
+import { ChatService } from '../chat/chat.service';
 
 @Injectable()
 export class AttendancesService {
+  private readonly logger = new Logger(AttendancesService.name);
+
   constructor(
     @InjectRepository(Attendance)
     private readonly repo: Repository<Attendance>,
@@ -24,7 +27,23 @@ export class AttendancesService {
     @InjectRepository(GroupStudent)
     private readonly groupStudentRepo: Repository<GroupStudent>,
     private readonly config: ConfigService,
+    private readonly chatService: ChatService,
   ) {}
+
+  /**
+   * CHAT sync: whenever attendance is saved for a session, the section's
+   * (= session's group's) chat room is re-synced so the teacher, the
+   * substitute and every ACTIVE student are seated — one call per save, even
+   * for bulk marking. Failures are logged but never break attendance
+   * operations (same policy as groups/enrollments chat sync).
+   */
+  private async syncSectionChatSafely(groupId: string): Promise<void> {
+    try {
+      await this.chatService.syncSectionChatRoom(groupId);
+    } catch (err: any) {
+      this.logger.warn(`Section chat sync failed for group ${groupId}: ${err?.message ?? err}`);
+    }
+  }
 
   // ---------- helpers ----------
 
@@ -117,7 +136,12 @@ export class AttendancesService {
     };
   }
 
-  async mark(sessionId: string, dto: MarkAttendanceDto, userId?: string): Promise<Attendance> {
+  async mark(
+    sessionId: string,
+    dto: MarkAttendanceDto,
+    userId?: string,
+    opts?: { skipChatSync?: boolean },
+  ): Promise<Attendance> {
     const session = await this.getSessionOrFail(sessionId);
 
     if (session.cancelled_at) {
@@ -171,14 +195,23 @@ export class AttendancesService {
       });
     }
 
-    return this.repo.save(attendance);
+    const saved = await this.repo.save(attendance);
+    // CHAT sync: keep the section's chat roster fresh (skipped for bulkMark,
+    // which performs ONE sync for the whole batch below).
+    if (!opts?.skipChatSync) {
+      await this.syncSectionChatSafely(session.group_id);
+    }
+    return saved;
   }
 
   async bulkMark(sessionId: string, records: MarkAttendanceDto[], userId?: string) {
+    const session = await this.getSessionOrFail(sessionId);
     const results: Attendance[] = [];
     for (const record of records) {
-      results.push(await this.mark(sessionId, record, userId));
+      results.push(await this.mark(sessionId, record, userId, { skipChatSync: true }));
     }
+    // ONE chat-room sync for the whole attendance batch (section = group).
+    await this.syncSectionChatSafely(session.group_id);
     return { marked: results.length, attendances: results };
   }
 

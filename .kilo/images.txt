@@ -1,8 +1,7 @@
-﻿yalabena-main-app:latest created=7 hours ago
-speakup-frontend:local created=8 hours ago
-newspeakup-main-app:latest created=6 days ago
-newspeakup-main-seed:latest created=6 days ago
-backend-app:latest created=6 weeks ago
-hassn-app:latest created=6 weeks ago
-postgres:15-alpine created=8 weeks ago
-redis:7-alpine created=2 months ago
+﻿
+yalabena-main-app:latest 25 hours ago
+speakup-frontend:local 33 hours ago
+newspeakup-main-app:latest 7 days ago
+newspeakup-main-seed:latest 7 days ago
+
+

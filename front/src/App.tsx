@@ -33,10 +33,16 @@ import LmsPage from '@/pages/Lms';
 import NotFoundPage from '@/pages/NotFound';
 import ChatPage from '@/pages/Chat';
 import LandingPage from '@/pages/public/LandingPage';
+import PublicCoursesPage from '@/pages/public/CoursesPage';
+import CourseDetailPage from '@/pages/public/CourseDetailPage';
+import BlogPage from '@/pages/public/BlogPage';
+import BlogPostPage from '@/pages/public/BlogPostPage';
+import PlacementBookingPage from '@/pages/public/PlacementBookingPage';
+import VerifyCertificatePage from '@/pages/public/VerifyCertificatePage';
+import RegisterOnlinePage from '@/pages/public/RegisterOnlinePage';
 import InventoryPage from '@/pages/inventory/InventoryPage';
 import KnowledgeBasePage from '@/pages/KnowledgeBase';
 import ReportsPage from '@/pages/Reports';
-import PublicCoursesPage from '@/pages/public/CoursesPage';
 import ActivityAttendancePage from '@/pages/activities/ActivityAttendancePage';
 import HrLayout from '@/pages/hr/HrLayout';
 import EmployeesPage from '@/pages/hr/EmployeesPage';
@@ -79,6 +85,12 @@ function App() {
         />
         <Route path="/welcome" element={<LandingPage />} />
         <Route path="/catalog" element={<PublicCoursesPage />} />
+        <Route path="/catalog/:id" element={<CourseDetailPage />} />
+        <Route path="/blog" element={<BlogPage />} />
+        <Route path="/blog/:slug" element={<BlogPostPage />} />
+        <Route path="/placement-booking" element={<PlacementBookingPage />} />
+        <Route path="/verify-certificate" element={<VerifyCertificatePage />} />
+        <Route path="/register-online" element={<RegisterOnlinePage />} />
 
         <Route
           path="/register"

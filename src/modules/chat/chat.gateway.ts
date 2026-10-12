@@ -37,6 +37,16 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly jwtService: JwtService,
   ) {}
 
+  /**
+   * Hand the Socket.IO server to ChatService so REST-initiated broadcasts
+   * (POST /chat/broadcast) can emit `new_message` to every connected member
+   * of the target rooms. Kept here (not injected in ChatService) to avoid a
+   * circular provider dependency.
+   */
+  afterInit(server: Server) {
+    this.chatService.registerGatewayServer(server);
+  }
+
   handleConnection(client: Socket) {
     this.logger.log(`Client connected: ${client.id}`);
     // Connection-level Consent enforcement (SRS §6.6): an authenticated

@@ -140,5 +140,15 @@
     "adjustment": "Adjustment (+/-)",
     "adjustmentHint": "Use a positive number to add stock and a negative number to remove stock",
     "saveMovement": "Save movement"
+  },
+  "public": {
+    "nav": {
+      "home": "Home",
+      "courses": "Courses",
+      "blog": "Blog",
+      "placement": "Placement Test",
+      "verify": "Verify Certificate",
+      "register": "Register Now"
+    }
   }
 }
