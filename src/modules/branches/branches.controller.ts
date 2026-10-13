@@ -1,8 +1,9 @@
-import { Controller, Get, Post, Body, Param, ParseUUIDPipe } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, ParseUUIDPipe } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiBody } from '@nestjs/swagger';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { BranchsService } from './branches.service';
 import { CreateBranchDto } from './dto/create-branch.dto';
+import { UpdateBranchDto } from './dto/update-branch.dto';
 
 @ApiTags('Branches')
 @ApiBearerAuth('JWT')
@@ -33,5 +34,24 @@ export class BranchsController {
   @ApiResponse({ status: 404, description: 'Branch not found.' })
   async findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.findOne(id);
+  }
+
+  @Put(':id')
+  @Roles('super_admin')
+  @ApiOperation({ summary: 'Update a branch' })
+  @ApiResponse({ status: 200, description: 'Branch updated.' })
+  @ApiResponse({ status: 404, description: 'Branch not found.' })
+  async update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateBranchDto) {
+    return this.service.update(id, dto);
+  }
+
+  @Delete(':id')
+  @Roles('super_admin')
+  @ApiOperation({ summary: 'Delete a branch (refused while students are linked)' })
+  @ApiResponse({ status: 200, description: 'Branch deleted.' })
+  @ApiResponse({ status: 404, description: 'Branch not found.' })
+  @ApiResponse({ status: 409, description: 'Branch still has students.' })
+  async remove(@Param('id', ParseUUIDPipe) id: string) {
+    return this.service.remove(id);
   }
 }

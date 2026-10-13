@@ -28,7 +28,8 @@ import {
   ShieldHalf,
   LogOut,
   X,
-  Calendar// <
+  Calendar,
+  HelpCircle// <
 } from "lucide-react";
 
 interface SidebarProps {
@@ -54,12 +55,13 @@ const navItems: NavItem[] = [
   { to: "/sessions", label: "nav.sessions", icon: Clock, roles: ["super_admin", "academic", "branch_manager", "teacher"] },
   { to: "/attendance", label: "nav.attendance", icon: ClipboardCheck, roles: ["super_admin", "academic", "branch_manager", "teacher"] },
   { to: "/placement-tests", label: "nav.placementTests", icon: BookMarked, roles: ["super_admin", "branch_manager", "sales", "academic"] },
-  { to: "/test-slots", label: "Test Slots", icon: Calendar, roles: ["super_admin", "branch_manager", "academic"] },
+  { to: "/test-slots", label: "nav.testSlots", icon: Calendar, roles: ["super_admin", "branch_manager", "academic"] },
   { to: "/waitlists", label: "nav.waitlists", icon: Hourglass, roles: ["super_admin", "branch_manager", "sales", "academic"] },
   { to: "/enrollments", label: "nav.enrollments", icon: ScrollText, roles: ["super_admin", "branch_manager", "sales", "finance", "academic"] },
   { to: "/finance", label: "nav.finance", icon: Wallet, roles: ["super_admin", "finance", "branch_manager"] },
   { to: "/certificates", label: "nav.certificates", icon: Award, roles: ["super_admin", "branch_manager", "academic", "finance", "teacher"] },
   { to: "/lms", label: "nav.lms", icon: BookMarked, roles: ["super_admin", "academic", "teacher", "student"] },
+  { to: "/instructor/question-bank", label: "nav.questionBank", icon: HelpCircle, roles: ["academic", "teacher"] },
   { to: "/hr", label: "nav.hr", icon: Briefcase, roles: ["super_admin", "hr", "branch_manager", "teacher", "finance"] },
   { to: "/activities", label: "nav.activities", icon: Sparkles, roles: ["super_admin", "branch_manager", "academic", "teacher", "sales"] },
   { to: "/knowledge-base", label: "nav.knowledgeBase", icon: BookOpenText, roles: ["super_admin", "hr", "branch_manager", "teacher", "sales", "finance"] },

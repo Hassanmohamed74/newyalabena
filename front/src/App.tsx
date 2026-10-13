@@ -30,6 +30,9 @@ import NotificationsPage from '@/pages/Notifications';
 import AuditLogsPage from '@/pages/AuditLogs';
 import SecuritySettingsPage from '@/pages/SecuritySettings';
 import LmsPage from '@/pages/Lms';
+import CoursePage from '@/pages/student/CoursePage';
+import QuizPage from '@/pages/student/QuizPage';
+import QuestionBankPage from '@/pages/instructor/QuestionBankPage';
 import NotFoundPage from '@/pages/NotFound';
 import ChatPage from '@/pages/Chat';
 import LandingPage from '@/pages/public/LandingPage';
@@ -118,6 +121,22 @@ function App() {
             <Route
               path="/lms/*"
               element={<LmsPage />}
+            />
+
+            {/* Student course content + quiz taking (linked from Lms page & CoursePage) */}
+            <Route
+              path="/student/courses/:groupId"
+              element={roleGate(['student', 'teacher', 'academic'], <CoursePage />)}
+            />
+            <Route
+              path="/student/quiz/:quizId"
+              element={roleGate(['student'], <QuizPage />)}
+            />
+
+            {/* Instructor question bank (backend: GET/POST /lms/questions/bank) */}
+            <Route
+              path="/instructor/question-bank"
+              element={roleGate(['academic', 'teacher'], <QuestionBankPage />)}
             />
 
             <Route
