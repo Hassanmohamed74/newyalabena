@@ -1,5 +1,6 @@
 import { Controller, Get, Post, Put, Delete, Body, Param, ParseUUIDPipe } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiBody } from '@nestjs/swagger';
+import { Public } from '../../common/decorators/public.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { BranchsService } from './branches.service';
 import { CreateBranchDto } from './dto/create-branch.dto';
@@ -19,6 +20,7 @@ export class BranchsController {
     return this.service.create(dto);
   }
 
+  @Public() // public branch list for registration/booking forms (SRS 4.14)
   @Get()
   @Roles('super_admin', 'branch_manager')
   @ApiOperation({ summary: 'Get all branches' })
