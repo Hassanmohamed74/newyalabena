@@ -94,6 +94,10 @@ export interface Lead {
   source: string;
   status: string;
   level_interest?: string;
+  /** Exam score/degree on the placement test (percent), synced on grading. */
+  placement_score?: number | null;
+  /** Evaluated CEFR level derived from the placement test (A1–C2). */
+  placement_level?: string | null;
   notes?: string;
   assigned_to?: string;
   assigned_to_user?: User;
@@ -169,6 +173,10 @@ export interface Group {
   id: string;
   name: string;
   courseId?: string;
+  /** snake_case ids as serialized by the backend entities. */
+  course_id?: string;
+  teacher_id?: string;
+  branch_id?: string;
   course?: Course;
   branchId?: string;
   branch?: Branch;
@@ -182,6 +190,11 @@ export interface Group {
   mode?: 'in_person' | 'online' | 'hybrid';
   meeting_link?: string;
   recording_link?: string;
+  /** The group's ONE fixed meeting URL shared by all its sessions. */
+  zoom_link?: string | null;
+  zoom_meeting_id?: string | null;
+  onmeet_link?: string | null;
+  onmeet_meeting_id?: string | null;
   schedule?: GroupSchedule[];
   start_date?: string;
   end_date?: string;
@@ -205,12 +218,20 @@ export interface GroupSchedule {
 export interface SessionItem {
   id: string;
   groupId?: string;
+  /** snake_case ids as serialized by the backend entity. */
+  group_id?: string;
   group?: Group;
+  /** Business-calendar date (YYYY-MM-DD) of the session. */
+  date?: string;
+  /** Delivery mode (in_person / online / hybrid). */
+  mode?: string;
   title: string;
   topic?: string;
   notes?: string;
   session_type: string;
   meeting_link?: string;
+  /** Resolved fixed meeting URL: per-session link, else the group's link. */
+  zoom_join_url?: string | null;
   recording_link?: string;
   classroomId?: string;
   classroom?: Classroom;

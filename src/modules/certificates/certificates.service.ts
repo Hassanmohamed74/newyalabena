@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { randomBytes } from 'crypto';
 import * as fs from 'fs';
 import { Certificate } from '../../shared/entities/certificate.entity';
+import { CertStatus } from '../../common/enums/cert-status.enum';
 import { CertificateTemplate } from '../../shared/entities/certificate-template.entity';
 import { Student } from '../../shared/entities/student.entity';
 import { Course } from '../../shared/entities/course.entity';
@@ -86,7 +87,7 @@ export class CertificatesService {
     if (!course) throw new NotFoundException('Course not found');
 
     const dup = await this.certs.findOne({
-      where: { student_id: dto.student_id, course_id: dto.course_id, status: 'ACTIVE' as any },
+      where: { student_id: dto.student_id, course_id: dto.course_id, status: 'active' as any },
     });
     if (dup) throw new BadRequestException(`Certificate already issued (code ${dup.code})`);
 
@@ -99,7 +100,7 @@ export class CertificatesService {
         template_id: template?.id ?? null,
         code: await this.genCode(),
         issue_date: new Date(),
-        status: 'ACTIVE' as any,
+        status: 'active' as any,
         issued_by: user?.id ?? null,
         is_auto_issued: isAuto,
       }),
@@ -147,7 +148,7 @@ export class CertificatesService {
         continue;
       }
       const dup = await this.certs.findOne({
-        where: { student_id: m.student_id, course_id: group.course_id, status: 'ACTIVE' as any },
+        where: { student_id: m.student_id, course_id: group.course_id, status: 'active' as any },
       });
       if (dup) {
         results.push({ student_id: m.student_id, name, score, issued: false, reason: `already issued (${dup.code})` });
@@ -165,7 +166,7 @@ export class CertificatesService {
 
   async revoke(id: string, reason: string, user: AuthUser) {
     const c = await this.getOne(id, user);
-    c.status = 'REVOKED' as any;
+    c.status = 'revoked' as any;
     c.revoked_at = new Date();
     c.revoke_reason = reason ?? null;
     return this.certs.save(c);
@@ -188,12 +189,65 @@ export class CertificatesService {
     return qb.take(300).getMany();
   }
 
+  /** Roles allowed to act on behalf of other students; a bare 'student' is self-service only. */
+  private static readonly STAFF_ROLES = [
+    'super_admin',
+    'branch_manager',
+    'sales',
+    'academic',
+    'teacher',
+    'finance',
+  ];
+
+  /** True when the caller is a student without any staff role (may only see their own data). */
+  private isSelfServiceStudent(user: AuthUser): boolean {
+    const roles = user?.roles ?? [];
+    return (
+      roles.includes('student') &&
+      !roles.some((r) => CertificatesService.STAFF_ROLES.includes(r))
+    );
+  }
+
+  private actorId(user: AuthUser): string {
+    return user.userId ?? user.id;
+  }
+
+  /**
+   * Certificates of the currently logged-in student (SRS: student dashboard).
+   * Links the auth user -> students row -> certificates with status 'active'.
+   */
+  async myCertificates(user: AuthUser) {
+    const student = await this.students.findOne({
+      where: { user_id: this.actorId(user) },
+    });
+    if (!student) {
+      throw new NotFoundException('No student profile is linked to this account.');
+    }
+    return this.certs
+      .createQueryBuilder('c')
+      .leftJoinAndSelect('c.course', 'course')
+      .leftJoinAndSelect('c.group', 'group')
+      .where('c.student_id = :sid', { sid: student.id })
+      .andWhere('c.status = :st', { st: CertStatus.ACTIVE })
+      .orderBy('c.issue_date', 'DESC')
+      .getMany();
+  }
+
   async getOne(id: string, user: AuthUser) {
     const c = await this.certs.findOne({
       where: { id },
       relations: ['student', 'student.user', 'course', 'group', 'template'],
     });
     if (!c) throw new NotFoundException('Certificate not found');
+    // Self-service students may only ever read their own certificates —
+    // checked before the branch filter because a student's own branch can
+    // legitimately be null while the certificate still belongs to them.
+    if (this.isSelfServiceStudent(user)) {
+      if (c.student?.user_id !== this.actorId(user)) {
+        throw new NotFoundException('Certificate not found');
+      }
+      return c;
+    }
     const branchFilter = effectiveBranchFilter(user);
     if (branchFilter && c.student?.branch_id !== branchFilter) throw new NotFoundException('Certificate not found');
     return c;
@@ -205,7 +259,7 @@ export class CertificatesService {
       where: { code: code.trim().toUpperCase() },
       relations: ['student', 'student.user', 'course'],
     });
-    if (!c || c.status !== ('ACTIVE' as any)) {
+    if (!c || c.status !== ('active' as any)) {
       return { valid: false, code: code.toUpperCase() };
     }
     return {

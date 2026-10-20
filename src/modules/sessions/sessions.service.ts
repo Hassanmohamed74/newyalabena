@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Session } from '../../shared/entities/session.entity';
 import { Group } from '../../shared/entities/group.entity';
+import { Student } from '../../shared/entities/student.entity';
 import { Attendance } from '../../shared/entities/attendance.entity';
 import { AttendanceStatus } from '../../common/enums/attendance-status.enum';
 import { GroupMode } from '../../common/enums/group-mode.enum';
@@ -18,7 +19,9 @@ export interface SessionConflict {
 @Injectable()
 export class SessionsService {
   constructor(
+    @InjectRepository(Session)
     private readonly repo: Repository<Session>,
+    @InjectRepository(Group)
     private readonly groupRepo: Repository<Group>,
     private readonly zoom: ZoomService,
     private readonly onmeet: OnMeetService,
@@ -58,6 +61,8 @@ export class SessionsService {
    * Scheduling conflicts for a candidate session: overlapping sessions in
    * the same group, for the same teacher, or in the same classroom.
    * Returns [] when the window is incomplete — nothing to compare against.
+   * `exclude_session_id` skips one session (used when validating an update
+   * to that session so it never conflicts with itself).
    */
   async detectConflicts(data: {
     group_id?: string;
@@ -65,20 +70,24 @@ export class SessionsService {
     date?: string;
     start_time?: string;
     end_time?: string;
+    exclude_session_id?: string;
   }): Promise<SessionConflict[]> {
-    const { group_id, classroom_id, date, start_time, end_time } = data;
+    const { group_id, classroom_id, date, start_time, end_time, exclude_session_id } = data;
     if (!date || !start_time || !end_time) return [];
 
     const conflicts: SessionConflict[] = [];
 
-    const overlapQb = (qb: any, column: string, value: string) =>
-      qb
+    const overlapQb = (qb: any, column: string, value: string) => {
+      const q = qb
         .select('s.id', 'id')
         .where(`${column} = :value`, { value })
         .andWhere('s.date = :date', { date })
         .andWhere('s.start_time < :end', { end: end_time })
         .andWhere('s.end_time > :start', { start: start_time })
         .andWhere('s.cancelled_at IS NULL');
+      if (exclude_session_id) q.andWhere('s.id != :excl', { excl: exclude_session_id });
+      return q;
+    };
 
     // 1) Same group overlapping
     if (group_id) {
@@ -96,7 +105,7 @@ export class SessionsService {
     if (group_id) {
       const group = await this.groupRepo.findOne({ where: { id: group_id } });
       if (group?.teacher_id) {
-        const rows = await this.repo
+        const qb = this.repo
           .createQueryBuilder('s')
           .select('s.id', 'id')
           .innerJoin('s.group', 'g')
@@ -104,8 +113,9 @@ export class SessionsService {
           .andWhere('s.date = :date', { date })
           .andWhere('s.start_time < :end', { end: end_time })
           .andWhere('s.end_time > :start', { start: start_time })
-          .andWhere('s.cancelled_at IS NULL')
-          .getRawMany();
+          .andWhere('s.cancelled_at IS NULL');
+        if (exclude_session_id) qb.andWhere('s.id != :excl', { excl: exclude_session_id });
+        const rows = await qb.getRawMany();
         for (const row of rows) {
           conflicts.push({ type: 'teacher', session_id: row.id });
         }
@@ -209,15 +219,68 @@ export class SessionsService {
     }
   }
 
-  async findAll(groupId?: string): Promise<Session[]> {
+  async findAll(
+    groupId?: string,
+    user?: { id?: string; userId?: string; roles?: string[] },
+  ): Promise<Session[]> {
     const query = this.repo.createQueryBuilder('session')
-      .leftJoinAndSelect('session.group', 'group');
+      .leftJoinAndSelect('session.group', 'group')
+      .leftJoinAndSelect('group.teacher', 'teacher');
 
     if (groupId) {
       query.andWhere('group.id = :groupId', { groupId });
     }
 
-    return query.getMany();
+    // Students only see sessions of groups they belong to (membership via
+    // `group_students` or `enrollments`). Staff roles keep the full list —
+    // @Roles on the controller already guarantees which of these can arrive.
+    const roles = (user?.roles ?? []).map((role) => String(role).toLowerCase());
+    const isStaff = roles.some((role) =>
+      ['super_admin', 'academic', 'branch_manager', 'teacher'].includes(role),
+    );
+    if (user && !isStaff) {
+      const studentRepo = this.repo.manager.getRepository(Student);
+      const userId = user.id ?? user.userId;
+      const student = userId
+        ? await studentRepo.findOne({ where: { user_id: userId } })
+        : null;
+      if (!student) return [];
+
+      // Column/table qualifications matter here:
+      //  - `group_students.status` is a CHECK-constrained lowercase varchar →
+      //    a direct compare is exact and keeps idx_gs_status usable.
+      //  - `enrollments.status` is the Postgres ENUM `enrollment_status`.
+      //    LOWER() has no enum overload (only text), which produced
+      //    `function lower(enrollment_status) does not exist`. Compare on the
+      //    text projection instead; this also matches both casings that
+      //    circulate in this codebase ('active' from the TS enum vs 'ACTIVE'
+      //    written by enrollments.service.create — same rationale as
+      //    chat.service), whereas a raw enum-literal comparison would fail at
+      //    parse time whenever a label is absent from the live enum.
+      const rows: { groupId: string }[] = await this.repo.query(
+        `SELECT gs.group_id AS "groupId" FROM group_students gs
+           WHERE gs.student_id = $1 AND gs.status = 'active'
+         UNION
+         SELECT e.group_id AS "groupId" FROM enrollments e
+           WHERE e.student_id = $1 AND LOWER(CAST(e.status AS TEXT)) = 'active'`,
+        [student.id],
+      );
+      const groupIds = rows.map((row) => row.groupId).filter(Boolean);
+      if (!groupIds.length) return [];
+      query.andWhere('group.id IN (:...groupIds)', { groupIds });
+    }
+
+    const sessions = await query.getMany();
+    // Resolve the fixed per-group meeting URL at read time: sessions created
+    // before activation logic (or with a cleared link) fall back to the
+    // group's Zoom link, then the group's OnMeet link. Never the other way
+    // around — a per-session link always wins.
+    return sessions.map((s) => {
+      if (!s.zoom_join_url && s.group) {
+        s.zoom_join_url = s.group.zoom_link ?? s.group.onmeet_link ?? null;
+      }
+      return s;
+    });
   }
 
   async findOne(id: string): Promise<Session> {
@@ -247,6 +310,34 @@ export class SessionsService {
       ...(rawStartTime ? { start_time: this.extractTime(rawStartTime) } : {}),
       ...(rawEndTime ? { end_time: this.extractTime(rawEndTime) } : {}),
     };
+
+    // Editing ONE session: when its schedule window changes, re-validate
+    // teacher/room/group conflicts — excluding the session itself. force=true
+    // keeps the legacy override behavior of create().
+    const currentdate = session.date instanceof Date
+      ? session.date.toISOString().slice(0, 10)
+      : String(session.date ?? '').slice(0, 10);
+    const scheduleChanged =
+      (payload.date !== undefined && String(payload.date).slice(0, 10) !== currentdate) ||
+      (payload.start_time !== undefined && payload.start_time !== session.start_time) ||
+      (payload.end_time !== undefined && payload.end_time !== session.end_time) ||
+      (payload.classroom_id !== undefined && payload.classroom_id !== session.classroom_id);
+    if (scheduleChanged && !data.force) {
+      const merged = {
+        group_id: payload.group_id ?? session.group_id,
+        classroom_id: payload.classroom_id ?? session.classroom_id,
+        date: payload.date ?? currentdate,
+        start_time: payload.start_time ?? session.start_time,
+        end_time: payload.end_time ?? session.end_time,
+      };
+      const conflicts = await this.detectConflicts({ ...merged, exclude_session_id: id });
+      if (conflicts.length > 0) {
+        throw new ConflictException({
+          message: 'Scheduling conflict detected',
+          conflicts,
+        });
+      }
+    }
 
     Object.assign(session, payload);
     return this.repo.save(session);

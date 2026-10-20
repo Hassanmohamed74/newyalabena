@@ -7,6 +7,25 @@ export interface NotificationQuery {
   unread_only?: boolean;
 }
 
+export interface BroadcastPayload {
+  title: string;
+  message: string;
+  /** Admin: all | students | teachers | specific_user | group. Teachers: group only. */
+  target_type?: "all" | "students" | "teachers" | "specific_user" | "group";
+  /** Required when target_type = specific_user. */
+  target_user_id?: string;
+  /** Required when target_type = group. */
+  group_id?: string;
+  /** @deprecated legacy audience — prefer target_type. */
+  target_role?: string;
+}
+
+export interface BroadcastResult {
+  sent: number;
+  target_type: string;
+  target_role?: string;
+}
+
 export const notificationsApi = {
   list: async (query: NotificationQuery = {}): Promise<PaginatedNotifications> => {
     const { data } = await apiClient.get<PaginatedNotifications>("/notifications", {
@@ -27,6 +46,11 @@ export const notificationsApi = {
 
   markAllRead: async (): Promise<{ marked: number }> => {
     const { data } = await apiClient.post<{ marked: number }>("/notifications/read-all");
+    return data;
+  },
+
+  sendBroadcast: async (payload: BroadcastPayload): Promise<BroadcastResult> => {
+    const { data } = await apiClient.post<BroadcastResult>("/notifications/broadcast", payload);
     return data;
   },
 };

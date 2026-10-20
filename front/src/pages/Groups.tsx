@@ -8,6 +8,7 @@ import { groupsApi } from "@/api/groups";
 import { coursesApi } from "@/api/courses";
 import { branchesApi } from "@/api/branches";
 import { usersApi } from "@/api/users";
+import { studentsApi } from "@/api/students";
 import { DataTable } from "@/components/common/DataTable";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,7 +22,7 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import type { Group, Course, Branch, User, GroupSchedule } from "@/types";
 import {
   Plus, X, Pencil, Trash2, Eye, ChevronLeft, CalendarDays,
-  Clock, AlertTriangle, MapPin, Video, Monitor
+  Clock, AlertTriangle, MapPin, Video, Monitor, UserCog, UserPlus
 } from "lucide-react";
 
 const groupModes = ["in_person", "online", "hybrid"];
@@ -39,6 +40,12 @@ const groupSchema = z.object({
   start_date: z.string().min(1, "Start date is required"),
   end_date: z.string().min(1, "End date is required"),
   status: z.string().optional(),
+  /** The group's ONE fixed meeting URL shared by all generated sessions. */
+  zoom_link: z
+    .string()
+    .trim()
+    .optional()
+    .refine((v) => !v || /^https?:\/\/.+/i.test(v), "Must be a valid http(s) URL"),
 }).refine((data) => {
   if (data.start_date && data.end_date) {
     return new Date(data.end_date) >= new Date(data.start_date);
@@ -67,6 +74,17 @@ export default function GroupsPage() {
   const [calendarDate, setCalendarDate] = useState(new Date().toISOString().slice(0, 10));
   const [scheduleForm, setScheduleForm] = useState({ day_of_week: 0, start_time: "", end_time: "" });
   const [conflictWarning, setConflictWarning] = useState<string[]>([]);
+
+  // ── Manage Teacher modal state (direct assignment, conflict/force flow) ──
+  const [teacherTarget, setTeacherTarget] = useState<Group | null>(null);
+  const [teacherChoice, setTeacherChoice] = useState("");
+  const [teacherError, setTeacherError] = useState<string | null>(null);
+
+  // ── Enroll Student modal state (direct ACTIVE enrollment, capacity/force) ──
+  const [enrollTarget, setEnrollTarget] = useState<Group | null>(null);
+  const [studentSearch, setStudentSearch] = useState("");
+  const [enrollStudentId, setEnrollStudentId] = useState("");
+  const [enrollError, setEnrollError] = useState<string | null>(null);
 
   const {
     data: groups,
@@ -175,6 +193,485 @@ export default function GroupsPage() {
     },
   });
 
+  // ── Automatic recurring-session scheduling ──────────────────────
+  // Activation: validate + generate sessions server-side (idempotent).
+  const [activationProblems, setActivationProblems] = useState<string[]>([]);
+  const activateMutation = useMutation({
+    mutationFn: (id: string) => groupsApi.activate(id),
+    onSuccess: (result) => {
+      setActivationProblems([]);
+      queryClient.invalidateQueries({ queryKey: ["groups"] });
+      queryClient.invalidateQueries({ queryKey: ["group", selectedGroupId] });
+      toast({
+        title: result.already_active ? "Group already active" : "Group activated",
+        description: result.already_active
+          ? `Schedule already generated (${result.total_occurrences} sessions).`
+          : `${result.generated} sessions generated${result.from ? ` (${result.from} → ${result.to})` : ""}.`,
+      });
+    },
+    onError: (err: any) => {
+      const details: string[] = Array.isArray(err?.conflicts)
+        ? err.conflicts.map((c: any) => String(c?.message ?? c)).filter(Boolean)
+        : Array.isArray(err?.errorList)
+          ? err.errorList
+          : [];
+      setActivationProblems(details.length > 0 ? details : [err.message || "Activation failed"]);
+      toast({ variant: "destructive", title: "Activation blocked", description: err.message });
+    },
+  });
+
+  // Reschedule: replace weekly windows from an effective date.
+  const [rescheduleTarget, setRescheduleTarget] = useState<Group | null>(null);
+  const [rescheduleDate, setRescheduleDate] = useState("");
+  const [rescheduleWindows, setRescheduleWindows] = useState<
+    Array<{ day_of_week: number; start_time: string; end_time: string }>
+  >([]);
+  const [rescheduleError, setRescheduleError] = useState<string | null>(null);
+
+  const openRescheduleDialog = (group: Group) => {
+    setRescheduleTarget(group);
+    setRescheduleDate(group.start_date ? group.start_date.slice(0, 10) : "");
+    setRescheduleWindows(
+      (group.schedule ?? []).map((s) => ({
+        day_of_week: s.day_of_week,
+        start_time: String(s.start_time ?? "").slice(0, 5),
+        end_time: String(s.end_time ?? "").slice(0, 5),
+      })),
+    );
+    setRescheduleError(null);
+  };
+
+  const closeRescheduleDialog = () => {
+    setRescheduleTarget(null);
+    setRescheduleError(null);
+  };
+
+  const rescheduleMutation = useMutation({
+    mutationFn: ({ id, payload }: { id: string; payload: { effective_date: string; windows: typeof rescheduleWindows } }) =>
+      groupsApi.reschedule(id, payload),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ["groups"] });
+      queryClient.invalidateQueries({ queryKey: ["group", result.group_id] });
+      toast({
+        title: "Schedule updated",
+        description: `${result.created} sessions created, ${result.deleted} replaced` +
+          (result.preserved.length > 0 ? `, ${result.preserved.length} preserved (with history)` : "") + ".",
+      });
+      closeRescheduleDialog();
+    },
+    onError: (err: any) => {
+      const details: string[] = Array.isArray(err?.conflicts)
+        ? err.conflicts.map((c: any) => String(c?.message ?? c)).filter(Boolean)
+        : Array.isArray(err?.errorList)
+          ? err.errorList
+          : [];
+      setRescheduleError(details.length > 0 ? details.join(" • ") : err.message || "Reschedule failed");
+      toast({ variant: "destructive", title: "Reschedule blocked", description: err.message });
+    },
+  });
+
+  // Active students searchable for the Enroll Student modal (only while open).
+  const { data: enrollableStudents } = useQuery({
+    queryKey: ["students", "enroll-picker", studentSearch],
+    queryFn: () =>
+      studentsApi.findAll({ search: studentSearch || undefined, status: "active" }),
+    enabled: enrollTarget !== null,
+  });
+
+  /**
+   * Direct teacher assignment (Business Rule 1). A 409 means schedule/room
+   * conflicts were detected — the modal shows them and offers a forced retry.
+   */
+  const assignTeacherM = useMutation({
+    mutationFn: ({ group, teacher_id, force }: { group: Group; teacher_id: string; force?: boolean }) =>
+      groupsApi.assignTeacher(group.id, { teacher_id, force }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["groups"] });
+      if (selectedGroupId) queryClient.invalidateQueries({ queryKey: ["group", selectedGroupId] });
+      if (teacherTarget) queryClient.invalidateQueries({ queryKey: ["group", teacherTarget.id] });
+      toast({ title: "Teacher assigned successfully" });
+      setTeacherTarget(null);
+      setTeacherError(null);
+    },
+    onError: (err: any) => {
+      if (err?.statusCode === 409) {
+        setTeacherError(err.message);
+        return;
+      }
+      toast({ variant: "destructive", title: "Error", description: err.message });
+    },
+  });
+
+  /**
+   * Direct manual enrollment (Business Rule 2): ACTIVE enrollment + roster.
+   * A 409 means the group is full — the modal warns and offers a forced retry.
+   */
+  const enrollStudentM = useMutation({
+    mutationFn: ({ group, student_id, force }: { group: Group; student_id: string; force?: boolean }) =>
+      groupsApi.assignStudent(group.id, { student_id, force }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["groups"] });
+      queryClient.invalidateQueries({ queryKey: ["group", enrollTarget?.id] });
+      queryClient.invalidateQueries({ queryKey: ["group-students"] });
+      queryClient.invalidateQueries({ queryKey: ["students"] });
+      toast({ title: "Student enrolled — course visible in their LMS" });
+      setEnrollTarget(null);
+      setEnrollError(null);
+      setEnrollStudentId("");
+      setStudentSearch("");
+    },
+    onError: (err: any) => {
+      if (err?.statusCode === 409) {
+        setEnrollError(err.message);
+        return;
+      }
+      toast({ variant: "destructive", title: "Error", description: err.message });
+    },
+  });
+
+  const openTeacherModal = (group: Group) => {
+    setTeacherTarget(group);
+    setTeacherChoice(group.teacher_id ?? "");
+    setTeacherError(null);
+  };
+
+  const openEnrollModal = (group: Group) => {
+    setEnrollTarget(group);
+    setEnrollStudentId("");
+    setStudentSearch("");
+    setEnrollError(null);
+  };
+
+  const closeTeacherModal = () => {
+    setTeacherTarget(null);
+    setTeacherError(null);
+  };
+
+  const closeEnrollModal = () => {
+    setEnrollTarget(null);
+    setEnrollStudentId("");
+    setStudentSearch("");
+    setEnrollError(null);
+  };
+
+  // ── Manage Teacher modal (conflict → 409 → "Assign Anyway" force flow) ──
+  const teacherDialog = teacherTarget ? (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-md rounded-xl bg-background p-6 shadow-lg">
+        <div className="flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-lg font-semibold">
+            <UserCog className="h-5 w-5" /> Manage Teacher
+          </h2>
+          <Button variant="ghost" size="icon" onClick={closeTeacherModal}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {teacherTarget.name}
+          {teacherTarget.teacher
+            ? ` — currently ${teacherTarget.teacher.first_name} ${teacherTarget.teacher.last_name}`
+            : " — unassigned"}
+        </p>
+
+        <div className="mt-4 space-y-2">
+          <Label>Teacher</Label>
+          <select
+            value={teacherChoice}
+            onChange={(e) => {
+              setTeacherChoice(e.target.value);
+              setTeacherError(null);
+            }}
+            className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+          >
+            <option value="">Select teacher…</option>
+            {teachers?.map((u: User) => (
+              <option key={u.id} value={u.id}>
+                {u.first_name} {u.last_name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {teacherError && (
+          <div className="mt-4 rounded-md border border-yellow-300 bg-yellow-50 p-3 dark:border-yellow-800 dark:bg-yellow-950/40">
+            <div className="flex items-center gap-2 text-yellow-800 dark:text-yellow-200">
+              <AlertTriangle className="h-4 w-4" />
+              <span className="text-sm font-medium">Scheduling conflicts detected</span>
+            </div>
+            <p className="mt-1 text-xs text-yellow-700 dark:text-yellow-300">{teacherError}</p>
+            <div className="mt-3 flex gap-2">
+              <Button
+                size="sm"
+                variant="destructive"
+                disabled={assignTeacherM.isPending}
+                onClick={() =>
+                  assignTeacherM.mutate({ group: teacherTarget, teacher_id: teacherChoice, force: true })
+                }
+              >
+                {assignTeacherM.isPending ? "Assigning…" : "Assign Anyway (Override)"}
+              </Button>
+              <Button size="sm" variant="ghost" onClick={closeTeacherModal}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+
+        <div className="mt-4 flex justify-end gap-2">
+          <Button variant="outline" onClick={closeTeacherModal}>
+            Cancel
+          </Button>
+          <Button
+            disabled={!teacherChoice || Boolean(teacherError) || assignTeacherM.isPending}
+            onClick={() =>
+              assignTeacherM.mutate({ group: teacherTarget, teacher_id: teacherChoice })
+            }
+          >
+            {assignTeacherM.isPending ? "Assigning…" : "Assign Teacher"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  // ── Enroll Student modal (capacity → 409 → "Enroll Anyway" force flow) ──
+  const rosterIds = new Set((enrollTarget?.students ?? []).map((s) => s.id));
+  const isFull =
+    enrollTarget != null &&
+    (enrollTarget.student_count ?? 0) >= (enrollTarget.capacity ?? Number.MAX_SAFE_INTEGER);
+
+  const enrollDialog = enrollTarget ? (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-lg rounded-xl bg-background p-6 shadow-lg">
+        <div className="flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-lg font-semibold">
+            <UserPlus className="h-5 w-5" /> Enroll Student
+          </h2>
+          <Button variant="ghost" size="icon" onClick={closeEnrollModal}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {enrollTarget.name}
+          {enrollTarget.course?.name ? ` — ${enrollTarget.course.name}` : ""} ·{" "}
+          {enrollTarget.student_count ?? 0} / {enrollTarget.capacity ?? "—"} seats
+        </p>
+
+        {isFull && (
+          <div className="mt-3 rounded-md border border-yellow-300 bg-yellow-50 p-2 text-xs text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950/40 dark:text-yellow-200">
+            This group is at full capacity — enrolling will require an admin override.
+          </div>
+        )}
+
+        <div className="mt-4 space-y-2">
+          <Label>Search active students</Label>
+          <Input
+            placeholder="Name, email or student number…"
+            value={studentSearch}
+            onChange={(e) => setStudentSearch(e.target.value)}
+          />
+          <select
+            value={enrollStudentId}
+            onChange={(e) => {
+              setEnrollStudentId(e.target.value);
+              setEnrollError(null);
+            }}
+            className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+          >
+            <option value="">
+              {(enrollableStudents ?? []).length === 0 ? "No students match" : "Select student…"}
+            </option>
+            {(enrollableStudents ?? []).map((s: any) => {
+              const label = s.user
+                ? `${s.user.first_name ?? ""} ${s.user.last_name ?? ""}`.trim()
+                : s.id.slice(0, 8);
+              const already = rosterIds.has(s.id);
+              return (
+                <option key={s.id} value={s.id} disabled={already}>
+                  {label}
+                  {already ? " (already enrolled)" : ""}
+                </option>
+              );
+            })}
+          </select>
+        </div>
+
+        {enrollError && (
+          <div className="mt-4 rounded-md border border-yellow-300 bg-yellow-50 p-3 dark:border-yellow-800 dark:bg-yellow-950/40">
+            <div className="flex items-center gap-2 text-yellow-800 dark:text-yellow-200">
+              <AlertTriangle className="h-4 w-4" />
+              <span className="text-sm font-medium">Cannot enroll</span>
+            </div>
+            <p className="mt-1 text-xs text-yellow-700 dark:text-yellow-300">{enrollError}</p>
+            <div className="mt-3 flex gap-2">
+              <Button
+                size="sm"
+                variant="destructive"
+                disabled={enrollStudentM.isPending}
+                onClick={() =>
+                  enrollStudentM.mutate({
+                    group: enrollTarget,
+                    student_id: enrollStudentId,
+                    force: true,
+                  })
+                }
+              >
+                {enrollStudentM.isPending ? "Enrolling…" : "Enroll Anyway (Override)"}
+              </Button>
+              <Button size="sm" variant="ghost" onClick={closeEnrollModal}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+
+        <div className="mt-4 flex justify-end gap-2">
+          <Button variant="outline" onClick={closeEnrollModal}>
+            Cancel
+          </Button>
+          <Button
+            disabled={!enrollStudentId || Boolean(enrollError) || enrollStudentM.isPending}
+            onClick={() =>
+              enrollStudentM.mutate({ group: enrollTarget, student_id: enrollStudentId })
+            }
+          >
+            {enrollStudentM.isPending ? "Enrolling…" : "Enroll Student"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  // ── Reschedule dialog: new weekly windows from an effective date ──
+  const rescheduleDialog = rescheduleTarget ? (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-lg rounded-xl bg-background p-6 shadow-lg">
+        <div className="flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-lg font-semibold">
+            <CalendarDays className="h-5 w-5" /> Update Schedule From Date
+          </h2>
+          <Button variant="ghost" size="icon" onClick={closeRescheduleDialog}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        <p className="mt-1 text-sm text-muted-foreground">{rescheduleTarget.name}</p>
+
+        <div className="mt-4 space-y-3">
+          <div>
+            <Label className="text-xs mb-1 block">Effective date — sessions before this date stay unchanged</Label>
+            <Input
+              type="date"
+              value={rescheduleDate}
+              min={rescheduleTarget.start_date?.slice(0, 10)}
+              max={rescheduleTarget.end_date?.slice(0, 10)}
+              onChange={(e) => setRescheduleDate(e.target.value)}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs">New weekly windows</Label>
+            {rescheduleWindows.map((w, idx) => (
+              <div key={idx} className="flex items-end gap-2">
+                <select
+                  value={w.day_of_week}
+                  onChange={(e) =>
+                    setRescheduleWindows((ws) =>
+                      ws.map((x, i) => (i === idx ? { ...x, day_of_week: Number(e.target.value) } : x)),
+                    )
+                  }
+                  className="h-10 rounded-md border border-input bg-background px-2 text-sm"
+                >
+                  {daysOfWeek.map((d, i) => (
+                    <option key={i} value={i}>{d}</option>
+                  ))}
+                </select>
+                <div>
+                  <Label className="text-[10px] mb-0.5 block">Start</Label>
+                  <Input
+                    type="time"
+                    value={w.start_time}
+                    onChange={(e) =>
+                      setRescheduleWindows((ws) =>
+                        ws.map((x, i) => (i === idx ? { ...x, start_time: e.target.value } : x)),
+                      )
+                    }
+                    className="h-9"
+                  />
+                </div>
+                <div>
+                  <Label className="text-[10px] mb-0.5 block">End</Label>
+                  <Input
+                    type="time"
+                    value={w.end_time}
+                    onChange={(e) =>
+                      setRescheduleWindows((ws) =>
+                        ws.map((x, i) => (i === idx ? { ...x, end_time: e.target.value } : x)),
+                      )
+                    }
+                    className="h-9"
+                  />
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-9 w-9"
+                  onClick={() => setRescheduleWindows((ws) => ws.filter((_, i) => i !== idx))}
+                >
+                  <Trash2 className="h-4 w-4 text-destructive" />
+                </Button>
+              </div>
+            ))}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                setRescheduleWindows((ws) => [...ws, { day_of_week: 0, start_time: "", end_time: "" }])
+              }
+            >
+              <Plus className="h-4 w-4 mr-1" /> Add Window
+            </Button>
+          </div>
+
+          <p className="text-xs text-muted-foreground">
+            Sessions with attendance history are preserved; future sessions without history are replaced to match
+            the new schedule. Past sessions are never touched.
+          </p>
+
+          {rescheduleError && (
+            <div className="rounded-md border border-yellow-300 bg-yellow-50 p-3 text-xs text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950/40 dark:text-yellow-200">
+              <div className="flex items-center gap-2 font-medium">
+                <AlertTriangle className="h-4 w-4" /> Schedule change blocked
+              </div>
+              <p className="mt-1">{rescheduleError}</p>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="outline" onClick={closeRescheduleDialog}>
+            Cancel
+          </Button>
+          <Button
+            disabled={
+              !rescheduleDate ||
+              rescheduleWindows.length === 0 ||
+              rescheduleWindows.some((w) => !w.start_time || !w.end_time) ||
+              rescheduleMutation.isPending
+            }
+            onClick={() =>
+              rescheduleMutation.mutate({
+                id: rescheduleTarget.id,
+                payload: { effective_date: rescheduleDate, windows: rescheduleWindows },
+              })
+            }
+          >
+            {rescheduleMutation.isPending ? "Applying…" : "Apply New Schedule"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
   const checkConflictsMutation = useMutation({
     mutationFn: groupsApi.checkConflicts,
     onSuccess: (result) => {
@@ -201,6 +698,7 @@ export default function GroupsPage() {
       start_date: data.start_date,
       end_date: data.end_date,
       status: data.status as any,
+      zoom_link: data.zoom_link?.trim() || null,
     };
     
     console.log("Submitting Payload:", dto);
@@ -225,6 +723,7 @@ export default function GroupsPage() {
     setValue("start_date", group.start_date ? group.start_date.slice(0, 10) : "");
     setValue("end_date", group.end_date ? group.end_date.slice(0, 10) : "");
     setValue("status", group.status || "upcoming");
+    setValue("zoom_link", group.zoom_link || "");
   };
 
   const checkConflicts = () => {
@@ -308,6 +807,9 @@ export default function GroupsPage() {
           </Button>
           {!isStudent && (
             <>
+              <Button variant="ghost" size="icon" className="h-8 w-8" title="Manage Teacher" onClick={(e) => { e.stopPropagation(); openTeacherModal(row); }}>
+                <UserCog className="h-4 w-4" />
+              </Button>
               <Button variant="ghost" size="icon" className="h-8 w-8" onClick={(e) => { e.stopPropagation(); startEdit(row); }}>
                 <Pencil className="h-4 w-4" />
               </Button>
@@ -353,6 +855,9 @@ export default function GroupsPage() {
     return (
       <div className="space-y-6">
         {dialog}
+        {teacherDialog}
+        {enrollDialog}
+        {rescheduleDialog}
         <Button variant="outline" onClick={() => { setView("list"); setSelectedGroupId(null); }} className="gap-2">
           <ChevronLeft className="h-4 w-4" /> Back to Groups
         </Button>
@@ -372,9 +877,49 @@ export default function GroupsPage() {
             </div>
           </div>
           {!isStudent && (
-            <Button onClick={() => startEdit(selectedGroup)}><Pencil className="h-4 w-4 mr-2" /> Edit Group</Button>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={() => openTeacherModal(selectedGroup)}>
+                <UserCog className="h-4 w-4 mr-2" /> Manage Teacher
+              </Button>
+              <Button variant="outline" onClick={() => openEnrollModal(selectedGroup)}>
+                <UserPlus className="h-4 w-4 mr-2" /> Enroll Student
+              </Button>
+              <Button variant="outline" onClick={() => openRescheduleDialog(selectedGroup)}>
+                <CalendarDays className="h-4 w-4 mr-2" /> Update Schedule
+              </Button>
+              <Button
+                onClick={() => activateMutation.mutate(selectedGroup.id)}
+                disabled={activateMutation.isPending}
+                title="Validate the schedule and generate all sessions"
+              >
+                {activateMutation.isPending
+                  ? "Activating…"
+                  : selectedGroup.status === "active"
+                    ? "Re-run Activation"
+                    : "Activate & Generate Sessions"}
+              </Button>
+              <Button onClick={() => startEdit(selectedGroup)}><Pencil className="h-4 w-4 mr-2" /> Edit Group</Button>
+            </div>
           )}
         </div>
+
+        {/* Activation result: structured conflicts / configuration errors */}
+        {activationProblems.length > 0 && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4">
+            <div className="flex items-center gap-2 text-destructive">
+              <AlertTriangle className="h-4 w-4" />
+              <span className="text-sm font-semibold">Activation blocked — fix the following and retry:</span>
+            </div>
+            <ul className="mt-2 ml-6 space-y-1 text-sm list-disc">
+              {activationProblems.map((p, i) => (
+                <li key={i}>{p}</li>
+              ))}
+            </ul>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Nothing was changed — no sessions were generated and the group status was not modified.
+            </p>
+          </div>
+        )}
 
         <div className="grid gap-4 md:grid-cols-4">
           <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Students</p><p className="text-lg font-bold">{selectedGroup.student_count ?? 0} / {selectedGroup.capacity ?? "—"}</p></CardContent></Card>
@@ -457,6 +1002,13 @@ export default function GroupsPage() {
           </TabsContent>
 
           <TabsContent value="students" className="space-y-4">
+            {!isStudent && (
+              <div className="flex justify-end">
+                <Button size="sm" onClick={() => openEnrollModal(selectedGroup)}>
+                  <UserPlus className="h-4 w-4 mr-1" /> Enroll Student
+                </Button>
+              </div>
+            )}
             {selectedGroup.students && selectedGroup.students.length > 0 ? (
               <div className="grid gap-3 md:grid-cols-2">
                 {selectedGroup.students.map((student) => {
@@ -479,7 +1031,16 @@ export default function GroupsPage() {
                 })}
               </div>
             ) : (
-              <div className="text-center py-8 text-muted-foreground">No students enrolled.</div>
+              <div className="text-center py-8 text-muted-foreground">
+                No students enrolled.
+                {!isStudent && (
+                  <div className="mt-3">
+                    <Button size="sm" variant="outline" onClick={() => openEnrollModal(selectedGroup)}>
+                      <UserPlus className="h-4 w-4 mr-1" /> Enroll Student
+                    </Button>
+                  </div>
+                )}
+              </div>
             )}
           </TabsContent>
 
@@ -493,7 +1054,16 @@ export default function GroupsPage() {
                   <span className="text-muted-foreground">Substitute:</span><span>{selectedGroup.substitute_teacher ? `${selectedGroup.substitute_teacher.first_name} ${selectedGroup.substitute_teacher.last_name}` : "—"}</span>
                   <span className="text-muted-foreground">Capacity:</span><span>{selectedGroup.capacity || "—"}</span>
                   <span className="text-muted-foreground">Mode:</span><span className="capitalize">{selectedGroup.mode || "in_person"}</span>
-                  <span className="text-muted-foreground">Meeting Link:</span><span>{selectedGroup.meeting_link || "—"}</span>
+                  <span className="text-muted-foreground">Zoom Link:</span>
+                  <span className="truncate">
+                    {selectedGroup.zoom_link ? (
+                      <a href={selectedGroup.zoom_link} target="_blank" rel="noopener noreferrer" className="text-primary underline">
+                        {selectedGroup.zoom_link}
+                      </a>
+                    ) : (
+                      "—"
+                    )}
+                  </span>
                   <span className="text-muted-foreground">Start Date:</span><span>{selectedGroup.start_date ? new Date(selectedGroup.start_date).toLocaleDateString() : "—"}</span>
                   <span className="text-muted-foreground">End Date:</span><span>{selectedGroup.end_date ? new Date(selectedGroup.end_date).toLocaleDateString() : "—"}</span>
                 </div>
@@ -508,6 +1078,9 @@ export default function GroupsPage() {
   return (
     <div className="space-y-6">
       {dialog}
+      {teacherDialog}
+      {enrollDialog}
+      {rescheduleDialog}
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <h1 className="text-2xl font-bold tracking-tight">{t("nav.groups")}</h1>
         <div className="flex gap-2">
@@ -601,6 +1174,19 @@ export default function GroupsPage() {
                   <Label>End Date *</Label>
                   <Input type="date" {...register("end_date")} />
                   {errors.end_date && <p className="text-sm text-destructive">{errors.end_date.message}</p>}
+                </div>
+
+                <div className="space-y-2 md:col-span-2">
+                  <Label>Fixed Zoom Link (shared by all sessions)</Label>
+                  <Input
+                    type="url"
+                    placeholder="https://zoom.us/j/…"
+                    {...register("zoom_link")}
+                  />
+                  {errors.zoom_link && <p className="text-sm text-destructive">{errors.zoom_link.message}</p>}
+                  <p className="text-xs text-muted-foreground">
+                    One meeting URL per group — every generated session resolves to this link.
+                  </p>
                 </div>
               </div>
 

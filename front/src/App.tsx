@@ -8,6 +8,9 @@ import { Toaster } from '@/components/ui/toaster';
 
 import LoginPage from '@/pages/Login';
 import RegisterPage from '@/pages/Register';
+import ForgotPasswordPage from '@/pages/ForgotPasswordPage';
+import ResetPasswordPage from '@/pages/ResetPasswordPage';
+import AuthCallbackPage from '@/pages/AuthCallbackPage';
 import PlacementTestPage from '@/pages/PlacementTestPage';
 
 import DashboardPage from '@/pages/Dashboard';
@@ -32,8 +35,10 @@ import SecuritySettingsPage from '@/pages/SecuritySettings';
 import LmsPage from '@/pages/Lms';
 import CoursePage from '@/pages/student/CoursePage';
 import QuizPage from '@/pages/student/QuizPage';
+import MyCertificatesPage from '@/pages/student/MyCertificates';
 import QuestionBankPage from '@/pages/instructor/QuestionBankPage';
 import NotFoundPage from '@/pages/NotFound';
+import ForbiddenPage from '@/pages/Forbidden';
 import ChatPage from '@/pages/Chat';
 import LandingPage from '@/pages/public/LandingPage';
 import PublicCoursesPage from '@/pages/public/CoursesPage';
@@ -53,7 +58,6 @@ import EmployeeDetailsPage from '@/pages/hr/EmployeeDetailsPage';
 import LeavesPage from '@/pages/hr/LeavesPage';
 import MyHrPage from '@/pages/hr/MyHrPage';
 import PayrollPage from '@/pages/hr/PayrollPage';
-
 
 // استيراد صفحات الـ Activities الجديدة
 import ActivitiesListPage from '@/pages/activities/ActivitiesListPage';
@@ -79,14 +83,18 @@ function App() {
   return (
     <>
       <Routes>
-        {/* Public Routes */}
+        {/* Public Landing & Catalog Routes */}
+        {/* Authenticated users never see the guest landing page: `/` and
+            `/welcome` resolve to their role-aware dashboard (same rule the
+            /login and /register routes already apply). */}
         <Route
-          path="/login"
-          element={
-            isAuthenticated ? <Navigate to="/" replace /> : <LoginPage />
-          }
+          path="/"
+          element={isAuthenticated ? <Navigate to="/dashboard" replace /> : <LandingPage />}
         />
-        <Route path="/welcome" element={<LandingPage />} />
+        <Route
+          path="/welcome"
+          element={isAuthenticated ? <Navigate to="/dashboard" replace /> : <LandingPage />}
+        />
         <Route path="/catalog" element={<PublicCoursesPage />} />
         <Route path="/catalog/:id" element={<CourseDetailPage />} />
         <Route path="/blog" element={<BlogPage />} />
@@ -95,11 +103,34 @@ function App() {
         <Route path="/verify-certificate" element={<VerifyCertificatePage />} />
         <Route path="/register-online" element={<RegisterOnlinePage />} />
 
+        {/* Public Auth Routes (Redirect to dashboard if already logged in) */}
+        <Route
+          path="/login"
+          element={
+            isAuthenticated ? <Navigate to="/dashboard" replace /> : <LoginPage />
+          }
+        />
         <Route
           path="/register"
           element={
-            isAuthenticated ? <Navigate to="/" replace /> : <RegisterPage />
+            isAuthenticated ? <Navigate to="/dashboard" replace /> : <RegisterPage />
           }
+        />
+
+        {/* Password Reset Routes */}
+        <Route
+          path="/forgot-password"
+          element={<ForgotPasswordPage />}
+        />
+        <Route
+          path="/reset-password"
+          element={<ResetPasswordPage />}
+        />
+
+        {/* OAuth Callback Route - stores JWT pair into useAuthStore */}
+        <Route
+          path="/auth/callback"
+          element={<AuthCallbackPage />}
         />
 
         {/* Public Placement Test */}
@@ -108,22 +139,23 @@ function App() {
           element={<PlacementTestPage />}
         />
 
-        {/* Protected Application Routes */}
+        {/* Protected Application Routes (Dashboard & Management) */}
         <Route element={<ProtectedRoute />}>
           <Route element={<AppShell />}>
-            <Route path="/" element={<DashboardPage />} />
-
             <Route
               path="/dashboard"
               element={<DashboardPage />}
             />
 
+            {/* 403 fallback for role-gated URLs (RequireRoles redirects here) */}
+            <Route path="/403" element={<ForbiddenPage />} />
+
             <Route
               path="/lms/*"
-              element={<LmsPage />}
+              element={roleGate(['super_admin', 'academic', 'teacher', 'student'], <LmsPage />)}
             />
 
-            {/* Student course content + quiz taking (linked from Lms page & CoursePage) */}
+            {/* Student course content + quiz taking */}
             <Route
               path="/student/courses/:groupId"
               element={roleGate(['student', 'teacher', 'academic'], <CoursePage />)}
@@ -133,7 +165,13 @@ function App() {
               element={roleGate(['student'], <QuizPage />)}
             />
 
-            {/* Instructor question bank (backend: GET/POST /lms/questions/bank) */}
+            {/* Student self-service certificates */}
+            <Route
+              path="/my-certificates"
+              element={roleGate(['student'], <MyCertificatesPage />)}
+            />
+
+            {/* Instructor question bank */}
             <Route
               path="/instructor/question-bank"
               element={roleGate(['academic', 'teacher'], <QuestionBankPage />)}
@@ -147,7 +185,13 @@ function App() {
               )}
             />
 
-            <Route path="/chat" element={<ChatPage />} />
+            <Route
+              path="/chat"
+              element={roleGate(
+                ['super_admin', 'branch_manager', 'academic', 'teacher', 'student', 'moderator'],
+                <ChatPage />,
+              )}
+            />
 
             <Route
               path="/students"
@@ -166,7 +210,10 @@ function App() {
 
             <Route
               path="/courses"
-              element={<CoursesPage />}
+              element={roleGate(
+                ['super_admin', 'branch_manager', 'academic', 'teacher'],
+                <CoursesPage />,
+              )}
             />
 
             <Route
@@ -195,7 +242,7 @@ function App() {
               )}
             />
 
-            {/* --- مسارات الـ Activities الجديدة --- */}
+            {/* --- مسارات الـ Activities --- */}
             <Route
               path="/activities"
               element={roleGate(

@@ -28,11 +28,52 @@ export class StudentsService {
     return this.repo.save(student);
   }
 
+  /**
+   * The student row backing a logged-in user (used by the self-service
+   * booking flow to resolve current_level / branch). Returns null when the
+   * user does not hold a student profile.
+   */
+  async findByUserId(userId: string): Promise<Student | null> {
+    if (!userId) return null;
+    return this.repo.findOne({
+      where: { user_id: userId },
+      relations: ['branch', 'profile'],
+    });
+  }
+
+  /**
+   * Backfill safety net (Task 2): users who hold the student role but have
+   * no `students`-table row — historical data written before role-assignment
+   * sync existed — are materialised here so they appear in /students and the
+   * /enrollments picker. Single INSERT..SELECT; ON CONFLICT protects against
+   * the UNIQUE(user_id) race, and the 'trg_students_number' trigger fills
+   * student_number. No-ops instantly when there are no orphans.
+   */
+  async syncMissingStudentProfiles(): Promise<number> {
+    const result = await this.repo.query(
+      `INSERT INTO students (user_id, branch_id, enrollment_date, status)
+       SELECT u.id, u.branch_id, CURRENT_DATE, 'active'
+       FROM users u
+       INNER JOIN user_roles ur ON ur.user_id = u.id
+       INNER JOIN roles r ON r.id = ur.role_id AND r.slug = 'student'
+       WHERE u.status = 'active'
+         AND NOT EXISTS (SELECT 1 FROM students s WHERE s.user_id = u.id)
+       ON CONFLICT (user_id) DO NOTHING`,
+    );
+    return result?.rowCount ?? 0;
+  }
+
   async findAll(filters: {
     search?: string;
     branchId?: string;
     status?: string;
+    groupId?: string;
   }): Promise<Student[]> {
+    // Heal any role/user drift before listing so every student-role holder
+    // is guaranteed a row (registration and role assignment already sync;
+    // this only ever touches legacy orphans).
+    await this.syncMissingStudentProfiles();
+
     const query = this.repo
       .createQueryBuilder('student')
       .leftJoinAndSelect(
@@ -46,7 +87,26 @@ export class StudentsService {
       .leftJoinAndSelect(
         'student.profile',
         'profile',
-      );
+      )
+      // Option B safety net (on top of the role-change soft-deactivate):
+      // only surface students whose linked user STILL holds the student
+      // role and whose account is still active. This hides any legacy or
+      // drifted row regardless of its students.status value, and is what
+      // keeps /students and the /enrollments picker in sync with
+      // user_roles at read time.
+      .andWhere('user.status = :activeUserStatus', {
+        activeUserStatus: 'active',
+      })
+      .andWhere((qb) => {
+        const sub = qb
+          .subQuery()
+          .select('1')
+          .from('user_roles', 'ur')
+          .innerJoin('roles', 'r', "r.id = ur.role_id AND r.slug = 'student'")
+          .where('ur.user_id = student.user_id')
+          .getQuery();
+        return `EXISTS ${sub}`;
+      });
 
     if (filters.search) {
       query.andWhere(
@@ -76,6 +136,21 @@ export class StudentsService {
           status: filters.status,
         },
       );
+    }
+
+    if (filters.groupId) {
+      // Roster filter (previously silently ignored → every caller — group
+      // detail tab, session attendance — received ALL students). UNION of
+      // group_students + ACTIVE enrollments keeps both roster sources.
+      const rows: { student_id: string }[] = await this.repo.query(
+        `SELECT student_id FROM group_students WHERE group_id = $1 AND status = 'active'
+         UNION
+         SELECT student_id FROM enrollments WHERE group_id = $2 AND LOWER(CAST(status AS TEXT)) = 'active'`,
+        [filters.groupId, filters.groupId],
+      );
+      const ids = rows.map((r) => r.student_id);
+      if (ids.length === 0) return [];
+      query.andWhere('student.id IN (:...rosterIds)', { rosterIds: ids });
     }
 
     return query.getMany();

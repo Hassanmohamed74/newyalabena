@@ -30,20 +30,90 @@ export const groupsApi = {
     const { data } = await apiClient.delete(`/groups/${id}/schedule/${scheduleId}`);
     return data;
   },
-  assignStudent: async (id: string, studentId: string): Promise<unknown> => {
-    const { data } = await apiClient.post(`/groups/${id}/students`, { student_id: studentId });
+  /** Direct enrollment: ACTIVE enrollment + roster row (force bypasses capacity). */
+  assignStudent: async (
+    id: string,
+    payload:
+      | string
+      | { student_id: string; course_id?: string; force?: boolean },
+  ): Promise<any> => {
+    const body = typeof payload === "string" ? { student_id: payload } : payload;
+    const { data } = await apiClient.post(`/groups/${id}/students`, body);
+    return data;
+  },
+  /** Direct teacher assignment: 409 on conflicts unless force=true. */
+  assignTeacher: async (
+    id: string,
+    payload: { teacher_id: string; force?: boolean },
+  ): Promise<any> => {
+    const { data } = await apiClient.patch(`/groups/${id}/assign-teacher`, payload);
     return data;
   },
   removeStudent: async (id: string, studentId: string): Promise<unknown> => {
     const { data } = await apiClient.delete(`/groups/${id}/students/${studentId}`);
     return data;
   },
-  checkConflicts: async (params: { teacherId?: string; classroomId?: string; start_time?: string; end_time?: string; excludeGroupId?: string }): Promise<{ conflicts: boolean; details: string[] }> => {
+  checkConflicts: async (params: {
+    teacherId?: string;
+    classroomId?: string;
+    /** Weekday 0=Sun..6=Sat — enables time-overlap checks. */
+    day_of_week?: number;
+    start_time?: string;
+    end_time?: string;
+    excludeGroupId?: string;
+  }): Promise<{ conflicts: boolean; details: string[] }> => {
     const { data } = await apiClient.get<{ conflicts: boolean; details: string[] }>("/groups/check-conflicts", { params });
     return data;
   },
   getCalendar: async (params: { view: 'day' | 'week' | 'month'; date: string; teacherId?: string; classroomId?: string; branchId?: string }): Promise<Group[]> => {
     const { data } = await apiClient.get<Group[]>("/groups/calendar", { params });
+    return data;
+  },
+
+  // ── Automatic recurring-session scheduling ──────────────────
+
+  /** Dry-run: occurrences + conflicts for the group's current schedule. */
+  validateSchedule: async (id: string): Promise<{
+    valid: boolean;
+    occurrences: number;
+    preview: Array<{ date: string; start_time: string; end_time: string }>;
+    conflicts: Array<{ type: string; message: string; date?: string }>;
+    errors: string[];
+  }> => {
+    const { data } = await apiClient.get(`/groups/${id}/schedule-validation`);
+    return data;
+  },
+
+  /** Activate the group → validate + auto-generate its sessions (idempotent). */
+  activate: async (id: string): Promise<{
+    group_id: string;
+    status: string;
+    already_active: boolean;
+    total_occurrences: number;
+    generated: number;
+    from?: string;
+    to?: string;
+  }> => {
+    const { data } = await apiClient.post(`/groups/${id}/activate`);
+    return data;
+  },
+
+  /** Replace the weekly windows from an effective date (keeps history). */
+  reschedule: async (
+    id: string,
+    payload: {
+      effective_date: string;
+      windows: Array<{ day_of_week: number; start_time: string; end_time: string; classroom_id?: string }>;
+    },
+  ): Promise<{
+    group_id: string;
+    effective_date: string;
+    total_occurrences: number;
+    created: number;
+    deleted: number;
+    preserved: Array<{ session_id: string; date: string; reason: string }>;
+  }> => {
+    const { data } = await apiClient.post(`/groups/${id}/reschedule`, payload);
     return data;
   },
 };

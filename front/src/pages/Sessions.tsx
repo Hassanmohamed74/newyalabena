@@ -122,7 +122,16 @@ export default function SessionsPage() {
       closeForm();
     },
     onError: (err: any) => {
-      toast({ variant: "destructive", title: "Error", description: err.message });
+      // Surface structured scheduling conflicts (teacher/room/group) when the
+      // server rejects the edited window; plain errors keep their message.
+      const conflictLines = Array.isArray(err?.conflicts)
+        ? err.conflicts.map((c: any) => String(c?.message ?? c)).filter(Boolean)
+        : [];
+      toast({
+        variant: "destructive",
+        title: "Update blocked",
+        description: conflictLines.length > 0 ? conflictLines.join(" • ") : err.message,
+      });
     },
   });
 

@@ -256,4 +256,81 @@ describe('SessionsService — conflict detection & auto-meetings (SRS 4.5.2 / 5.
 
     expect(zoom.createMeeting).not.toHaveBeenCalled();
   });
+
+  // ---------- update: single-session editing with conflict validation ----------
+
+  const existingSession = () => ({
+    id: 's-1',
+    group_id: 'g1',
+    classroom_id: 'c1',
+    date: new Date('2026-10-01T00:00:00Z'),
+    start_time: '10:00:00',
+    end_time: '11:00:00',
+    cancelled_at: null,
+    attendance_locked: false,
+    group: { ...GROUP },
+  });
+
+  it('update throws 409 when the new window overlaps another session (excluding itself)', async () => {
+    repo.findOne.mockResolvedValue(existingSession());
+    // Three overlap queries (group / teacher / classroom) all find clashes.
+    repo.createQueryBuilder
+      .mockReturnValueOnce(makeQb([{ id: 's-clash' }]))
+      .mockReturnValueOnce(makeQb([{ id: 's-clash' }]))
+      .mockReturnValueOnce(makeQb([{ id: 's-clash' }]));
+    groupRepo.findOne.mockResolvedValue(GROUP);
+
+    await expect(
+      service.update('s-1', { date: '2026-10-01', start_time: '10:30:00', end_time: '11:30:00' }),
+    ).rejects.toThrow(ConflictException);
+    expect(repo.save).not.toHaveBeenCalled();
+  });
+
+  it('update excludes the edited session itself from conflict checks', async () => {
+    repo.findOne.mockResolvedValue(existingSession());
+    const qb = makeQb([]);
+    repo.createQueryBuilder.mockReturnValue(qb);
+    groupRepo.findOne.mockResolvedValue(GROUP);
+
+    // Unchanged schedule → no conflict queries at all, save passes through.
+    await service.update('s-1', { notes: 'updated notes only' });
+    expect(repo.save).toHaveBeenCalled();
+
+    // Changing only the notes must not trigger window validation.
+    expect(qb.where).not.toHaveBeenCalled();
+  });
+
+  it('update re-validates a changed window and passes when no conflict exists', async () => {
+    repo.findOne.mockResolvedValue(existingSession());
+    repo.createQueryBuilder
+      .mockReturnValueOnce(makeQb([])) // group overlap
+      .mockReturnValueOnce(makeQb([])) // teacher overlap
+      .mockReturnValueOnce(makeQb([])); // classroom overlap
+    groupRepo.findOne.mockResolvedValue(GROUP);
+
+    const saved = await service.update('s-1', {
+      date: '2026-10-08',
+      start_time: '12:00:00',
+      end_time: '13:00:00',
+    });
+    expect(saved).toBeTruthy();
+    expect(repo.save).toHaveBeenCalled();
+  });
+
+  it('update with force=true bypasses conflicts', async () => {
+    repo.findOne.mockResolvedValue(existingSession());
+    repo.createQueryBuilder
+      .mockReturnValueOnce(makeQb([{ id: 's-clash' }]))
+      .mockReturnValueOnce(makeQb([{ id: 's-clash' }]))
+      .mockReturnValueOnce(makeQb([{ id: 's-clash' }]));
+    groupRepo.findOne.mockResolvedValue(GROUP);
+
+    await service.update('s-1', {
+      date: '2026-10-01',
+      start_time: '10:30:00',
+      end_time: '11:30:00',
+      force: true,
+    });
+    expect(repo.save).toHaveBeenCalled();
+  });
 });
