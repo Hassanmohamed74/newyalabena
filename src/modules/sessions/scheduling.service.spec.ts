@@ -154,12 +154,15 @@ describe('SessionSchedulingService', () => {
       }),
     };
 
+    const config = { get: jest.fn(() => undefined) } as any;
+
     service = new SessionSchedulingService(
       sessionRepo,
       groupRepo,
       scheduleRepo,
       testSlotRepo,
       dataSource,
+      config,
     );
 
     // One query-builder factory serves both the conflict candidate query

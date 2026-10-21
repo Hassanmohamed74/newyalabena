@@ -2,14 +2,20 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { DataSource, EntityManager, In, Not, Repository } from 'typeorm';
 import { Session } from '../../shared/entities/session.entity';
 import { Group } from '../../shared/entities/group.entity';
 import { GroupSchedule } from '../../shared/entities/group-schedule.entity';
 import { TestSlot } from '../../shared/entities/test-slot.entity';
+import { TeacherAvailability } from '../../shared/entities/teacher-availability.entity';
+import { Employee } from '../../shared/entities/employee.entity';
+import { Classroom } from '../../shared/entities/classroom.entity';
+import { GroupStudent } from '../../shared/entities/group-student.entity';
 import { GroupMode } from '../../common/enums/group-mode.enum';
 import { GroupStatus } from '../../common/enums/group-status.enum';
 import {
@@ -81,6 +87,22 @@ function overlapsOnSameDay(
   return aS < bE && bS < aE; // partial overlaps count; touching boundaries don't
 }
 
+/** Generation horizon: only the next N weeks of occurrences are created on activation. */
+export const HORIZON_WEEKS = 8;
+
+/** 'YYYY-MM-DD' today in the academy wall-clock zone (APP_TIME_ZONE, default Africa/Cairo). */
+function academyToday(config: ConfigService): string {
+  const timeZone = config.get<string>('APP_TIME_ZONE', 'Africa/Cairo');
+  return new Intl.DateTimeFormat('en-CA', { timeZone }).format(new Date());
+}
+
+/** Add N weeks to a YYYY-MM-DD date (UTC calendar arithmetic, DST-safe). */
+function addWeeks(dateStr: string, weeks: number): string {
+  const d = Date.parse(`${dateStr.slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(d)) return dateStr;
+  return new Date(d + weeks * 7 * 86_400_000).toISOString().slice(0, 10);
+}
+
 /**
  * Automatic recurring-session scheduling: generation on group activation,
  * idempotent inserts (partial unique index + ON CONFLICT DO NOTHING),
@@ -93,6 +115,7 @@ function overlapsOnSameDay(
  */
 @Injectable()
 export class SessionSchedulingService {
+  private readonly logger = new Logger(SessionSchedulingService.name);
   constructor(
     @InjectRepository(Session)
     private readonly sessions: Repository<Session>,
@@ -103,6 +126,7 @@ export class SessionSchedulingService {
     @InjectRepository(TestSlot)
     private readonly testSlots: Repository<TestSlot>,
     private readonly dataSource: DataSource,
+    private readonly config: ConfigService,
   ) {}
 
   // ─── Validation helpers ───────────────────────────────────────
@@ -309,6 +333,99 @@ export class SessionSchedulingService {
       }
     }
 
+    // ── Q4: Teacher availability ──────────────────────────────────────
+    // A session may only be scheduled when the teacher is available
+    // (teacher_availabilities) for that weekday and time window.
+    try {
+      const employee = await em
+        .getRepository(Employee)
+        .createQueryBuilder('e')
+        .where('e.user_id = :uid', { uid: group.teacher_id })
+        .getOne();
+      if (employee) {
+        const availabilities = await em.getRepository(TeacherAvailability).find({
+          where: { employee_id: employee.id, is_available: true },
+        });
+        const byDay = new Map<number, Array<{ start: string; end: string }>>();
+        for (const a of availabilities) {
+          const list = byDay.get(a.day_of_week) ?? [];
+          list.push({ start: a.start_time, end: a.end_time });
+          byDay.set(a.day_of_week, list);
+        }
+        for (const o of occurrences) {
+          const windows = byDay.get(o.day_of_week);
+          if (!windows || windows.length === 0) {
+            conflicts.push({
+              type: 'teacher',
+              message: `Teacher ${teacherName} has no availability on ${humanDate(o.date)} (${dayLabel(o.day_of_week)}).`,
+              date: o.date,
+              start_time: o.start_time,
+              end_time: o.end_time,
+              person: teacherName,
+            });
+            continue;
+          }
+          const oStart = toMinutes(o.start_time);
+          const oEnd = toMinutes(o.end_time);
+          const covered = windows.some((w) => {
+            const ws = toMinutes(w.start);
+            const we = toMinutes(w.end);
+            return !Number.isNaN(ws) && !Number.isNaN(we) && oStart >= ws && oEnd <= we;
+          });
+          if (!covered) {
+            conflicts.push({
+              type: 'teacher',
+              message: `Teacher ${teacherName} is not available during ${shortTime(o.start_time)}–${shortTime(o.end_time)} on ${humanDate(o.date)}.`,
+              date: o.date,
+              start_time: o.start_time,
+              end_time: o.end_time,
+              person: teacherName,
+            });
+          }
+        }
+      }
+    } catch (err: any) {
+      // Availability is advisory: never block activation on a lookup failure.
+      this.logger?.warn?.(`Teacher availability check skipped: ${err?.message ?? err}`);
+    }
+
+    // ── Q4: Room capacity ─────────────────────────────────────────────
+    // For in-person groups, the enrolled student count must not exceed
+    // the classroom's capacity. Skipped for online/hybrid or room-less windows.
+    if (group.mode === GroupMode.IN_PERSON) {
+      try {
+        const activeCount = await em
+          .getRepository(GroupStudent)
+          .createQueryBuilder('gs')
+          .where('gs.group_id = :gid', { gid: group.id })
+          .andWhere("LOWER(CAST(gs.status AS TEXT)) = 'active'")
+          .getCount();
+        const roomIds = [...new Set(occurrences.map((o) => o.classroom_id).filter((r): r is string => Boolean(r)))];
+        if (roomIds.length > 0) {
+          const rooms = await em.getRepository(Classroom).findByIds(roomIds);
+          const roomById = new Map<string, { capacity: number; name: string }>();
+          for (const r of rooms) roomById.set(r.id, { capacity: r.capacity, name: r.name });
+          for (const o of occurrences) {
+            if (!o.classroom_id) continue;
+            const room = roomById.get(o.classroom_id);
+            if (!room) continue;
+            if (activeCount > room.capacity) {
+              conflicts.push({
+                type: 'classroom',
+                message: `Room "${room.name}" capacity (${room.capacity}) is below the group's enrolled student count (${activeCount}) for in-person session on ${humanDate(o.date)}.`,
+                date: o.date,
+                start_time: o.start_time,
+                end_time: o.end_time,
+                room: o.classroom_id,
+              });
+            }
+          }
+        }
+      } catch (err: any) {
+        this.logger?.warn?.(`Room capacity check skipped: ${err?.message ?? err}`);
+      }
+    }
+
     // De-duplicate identical messages (an occurrence may clash on several sessions).
     const seen = new Set<string>();
     return conflicts.filter((c) => (seen.has(c.message) ? false : (seen.add(c.message), true)));
@@ -390,8 +507,17 @@ export class SessionSchedulingService {
           classroom_id: s.classroom_id,
         }));
 
-      const startDate = dateStr(group.start_date);
-      const endDate = dateStr(group.end_date);
+      // ── 8-week generation horizon (Q2) ──────────────────────────────
+      // Generate only the next 8 weeks of occurrences. Start from the
+      // group's start_date if it is in the future, otherwise from today.
+      // Cap the end date at today + 8 weeks so repeated activations
+      // progressively fill the horizon as time advances.
+      const today = academyToday(this.config);
+      const groupStart = dateStr(group.start_date);
+      const groupEnd = dateStr(group.end_date);
+      const startDate = groupStart >= today ? groupStart : today;
+      const horizonEnd = addWeeks(today, HORIZON_WEEKS);
+      const endDate = groupEnd > horizonEnd ? horizonEnd : groupEnd;
 
       const configErrors = validateScheduleConfig(windows, startDate, endDate);
       if (configErrors.length > 0) {

@@ -10,6 +10,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { Group } from '../../shared/entities/group.entity';
 import { GroupSchedule } from '../../shared/entities/group-schedule.entity';
+import { Session } from '../../shared/entities/session.entity';
 import { User } from '../../shared/entities/user.entity';
 import { Student } from '../../shared/entities/student.entity';
 import { GroupMode } from '../../common/enums/group-mode.enum';
@@ -64,6 +65,8 @@ export class GroupsService {
     private readonly repo: Repository<Group>,
     @InjectRepository(GroupSchedule)
     private readonly scheduleRepo: Repository<GroupSchedule>,
+    @InjectRepository(Session)
+    private readonly sessionRepo: Repository<Session>,
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
     @InjectRepository(Student)
@@ -219,6 +222,74 @@ export class GroupsService {
     if (dto.onmeet_link !== undefined) group.onmeet_link = dto.onmeet_link || null;
     if (dto.zoom_meeting_id !== undefined) group.zoom_meeting_id = dto.zoom_meeting_id || null;
     if (dto.onmeet_meeting_id !== undefined) group.onmeet_meeting_id = dto.onmeet_meeting_id || null;
+
+    // ── Q5: PUT /groups/:id conflict re-validation ────────────────────
+    // When the teacher or the date range changes, ensure existing sessions
+    // do not conflict with other live groups and that the range still covers
+    // any already-generated sessions.
+    const teacherChanged = dto.teacherId !== undefined && dto.teacherId !== group.teacher_id;
+    const datesChanged = (dto.start_date !== undefined || dto.end_date !== undefined);
+    if (teacherChanged || datesChanged) {
+      const newTeacherId = teacherChanged ? dto.teacherId! : group.teacher_id;
+      const newStart = dto.start_date !== undefined ? new Date(dto.start_date) : group.start_date;
+      const newEnd = dto.end_date !== undefined ? new Date(dto.end_date) : group.end_date;
+
+      // Existing sessions of THIS group must fall within the new date range.
+      const outOfRange = await this.sessionRepo
+        .createQueryBuilder('s')
+        .where('s.group_id = :gid', { gid: group.id })
+        .andWhere('s.cancelled_at IS NULL')
+        .andWhere('(s.date < :start OR s.date > :end)', {
+          start: newStart.toISOString().slice(0, 10),
+          end: newEnd.toISOString().slice(0, 10),
+        })
+        .getCount();
+      if (outOfRange > 0) {
+        throw new ConflictException(
+          `Changing the group dates would leave ${outOfRange} existing session(s) outside the new start/end range.`,
+        );
+      }
+
+      // Teacher overlap: the new teacher must not already teach another live
+      // group at the same time as this group's existing sessions.
+      if (teacherChanged) {
+        const overlapping = await this.sessionRepo
+          .createQueryBuilder('s')
+          .leftJoinAndSelect('s.group', 'g')
+          .where('s.cancelled_at IS NULL')
+          .andWhere('g.teacher_id = :tid', { tid: newTeacherId })
+          .andWhere('g.id != :gid', { gid: group.id })
+          .andWhere('g.status IN (:...statuses)', {
+            statuses: [GroupStatus.UPCOMING, GroupStatus.ACTIVE],
+          })
+          .getMany();
+        const groupSessions = await this.sessionRepo.find({
+          where: { group_id: group.id, cancelled_at: null },
+        });
+        const conflicts: string[] = [];
+        for (const gs of groupSessions) {
+          for (const os of overlapping) {
+            if (String(gs.date) !== String(os.date)) continue;
+            const gsStart = toMinutes(gs.start_time);
+            const gsEnd = toMinutes(gs.end_time);
+            const osStart = toMinutes(os.start_time);
+            const osEnd = toMinutes(os.end_time);
+            if (gsStart < osEnd && osStart < gsEnd) {
+              conflicts.push(
+                `Teacher already teaches "${os.group?.name ?? 'another group'}" on ${gs.date} from ${gs.start_time} to ${gs.end_time}`,
+              );
+              break;
+            }
+          }
+        }
+        if (conflicts.length > 0) {
+          throw new ConflictException({
+            message: 'Teacher change conflicts with existing sessions.',
+            conflicts,
+          });
+        }
+      }
+    }
 
     const saved = await this.repo.save(group);
 

@@ -40,6 +40,14 @@ const groupSchema = z.object({
   start_date: z.string().min(1, "Start date is required"),
   end_date: z.string().min(1, "End date is required"),
   status: z.string().optional(),
+  /** Recurring schedule: selected weekdays (0 = Sunday … 6 = Saturday). */
+  schedule_weekdays: z
+    .array(z.coerce.number().min(0).max(6))
+    .min(1, "Select at least one weekday"),
+  /** Recurring schedule: academy wall-clock start time (HH:MM). */
+  schedule_start_time: z.string().min(1, "Start time is required"),
+  /** Recurring schedule: academy wall-clock end time (HH:MM). */
+  schedule_end_time: z.string().min(1, "End time is required"),
   /** The group's ONE fixed meeting URL shared by all generated sessions. */
   zoom_link: z
     .string()
@@ -54,6 +62,14 @@ const groupSchema = z.object({
 }, {
   message: "End date must be after start date",
   path: ["end_date"],
+}).refine((data) => {
+  if (data.schedule_start_time && data.schedule_end_time) {
+    return new Date(`1970-01-01T${data.schedule_end_time}`) > new Date(`1970-01-01T${data.schedule_start_time}`);
+  }
+  return true;
+}, {
+  message: "End time must be after start time",
+  path: ["schedule_end_time"],
 });
 
 type GroupForm = z.infer<typeof groupSchema>;
@@ -73,6 +89,7 @@ export default function GroupsPage() {
   const [calendarView, setCalendarView] = useState<"day" | "week" | "month">("week");
   const [calendarDate, setCalendarDate] = useState(new Date().toISOString().slice(0, 10));
   const [scheduleForm, setScheduleForm] = useState({ day_of_week: 0, start_time: "", end_time: "" });
+  const [formWeekdays, setFormWeekdays] = useState<number[]>([]);
   const [conflictWarning, setConflictWarning] = useState<string[]>([]);
 
   // ── Manage Teacher modal state (direct assignment, conflict/force flow) ──
@@ -686,7 +703,7 @@ export default function GroupsPage() {
     reset();
   };
 
-  const onSubmit = (data: GroupForm) => {
+  const onSubmit = async (data: GroupForm) => {
     const dto = {
       name: data.name,
       courseId: data.courseId,
@@ -700,13 +717,68 @@ export default function GroupsPage() {
       status: data.status as any,
       zoom_link: data.zoom_link?.trim() || null,
     };
-    
+
     console.log("Submitting Payload:", dto);
 
     if (editingId) {
       updateMutation.mutate({ id: editingId, dto });
     } else {
-      createMutation.mutate(dto);
+      try {
+        const group = await createMutation.mutateAsync(dto);
+
+        // Create a schedule window for EVERY selected weekday using the
+        // existing /groups/{id}/schedule endpoint.  Use
+        // Promise.allSettled so that individual failures do not abort the
+        // whole operation — the group is kept and the user is informed.
+        const schedulePromises = data.schedule_weekdays.map((day) =>
+          groupsApi.addSchedule(group.id, {
+            day_of_week: day,
+            start_time: data.schedule_start_time,
+            end_time: data.schedule_end_time,
+          })
+        );
+        const scheduleResults = await Promise.allSettled(schedulePromises);
+
+        const failed = scheduleResults.filter(
+          (r): r is PromiseRejectedResult => r.status === "rejected"
+        );
+        const succeeded = scheduleResults.filter(
+          (r): r is PromiseFulfilledResult => r.status === "fulfilled"
+        );
+
+        if (failed.length > 0) {
+          // Group was created successfully; do NOT roll it back.
+          // Report which windows failed and which succeeded, and give the
+          // user a safe recovery path (re‑try via “Update Schedule” later).
+          const failedMsgs = failed.map((f) => f.reason?.message || "Unknown schedule error");
+          const succeededCount = succeeded.length;
+          throw new Error(
+            `Group created successfully (${
+              succeededCount > 0 ? succeededCount + ' schedule window' : 'no schedule windows'
+            }${succeededCount !== 1 ? 's' : ''} created), ` +
+              `but schedule creation${failed.length > 1 ? 's' : ''} failed: ${failedMsgs.join(
+                '; '
+              )}. The group was not rolled back. You can add the missing schedule windows via the "Update Schedule" feature later.`
+          );
+        }
+
+        // All schedules created successfully.
+        queryClient.invalidateQueries({ queryKey: ["group", selectedGroupId] });
+        toast({
+          title: "Group created successfully",
+          description: succeededCount > 0
+            ? `${succeededCount} schedule window${succeededCount !== 1 ? 's' : ''} created.`
+            : "Group created with no schedule windows.",
+        });
+        closeForm();
+      } catch (err: any) {
+        console.error("Group creation error:", err);
+        toast({
+          variant: "destructive",
+          title: "Failed to create group",
+          description: err.message || "Unknown error",
+        });
+      }
     }
   };
 
@@ -724,6 +796,19 @@ export default function GroupsPage() {
     setValue("end_date", group.end_date ? group.end_date.slice(0, 10) : "");
     setValue("status", group.status || "upcoming");
     setValue("zoom_link", group.zoom_link || "");
+    // Recurring schedule: populate from the first schedule window if present.
+    const firstSch = (group.schedules ?? [])[0];
+    if (firstSch) {
+      setValue("schedule_weekdays", [firstSch.day_of_week]);
+      setValue("schedule_start_time", String(firstSch.start_time).slice(0, 5));
+      setValue("schedule_end_time", String(firstSch.end_time).slice(0, 5));
+      setFormWeekdays([firstSch.day_of_week]);
+    } else {
+      setValue("schedule_weekdays", []);
+      setValue("schedule_start_time", "");
+      setValue("schedule_end_time", "");
+      setFormWeekdays([]);
+    }
   };
 
   const checkConflicts = () => {
@@ -1174,6 +1259,54 @@ export default function GroupsPage() {
                   <Label>End Date *</Label>
                   <Input type="date" {...register("end_date")} />
                   {errors.end_date && <p className="text-sm text-destructive">{errors.end_date.message}</p>}
+                </div>
+
+                {/* Recurring schedule section */}
+                <div className="space-y-2 md:col-span-2">
+                  <Label className="font-medium">Recurring Schedule</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Sessions are generated automatically for each selected weekday.
+                  </p>
+                  <div className="flex gap-2 flex-wrap">
+                    {daysOfWeek.map((d, i) => (
+                      <label key={i} className="flex items-center gap-1 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          value={i}
+                          onChange={(e) => {
+                            const val = e.target.checked;
+                            setFormWeekdays((prev) =>
+                              val
+                                ? [...prev, i]
+                                : prev.filter((x) => x !== i)
+                            );
+                          }}
+                          defaultChecked={formWeekdays.includes(i)}
+                          className="rounded border-input bg-background text-sm"
+                        />
+                        {d}
+                      </label>
+                    ))}
+                  </div>
+                  {errors.schedule_weekdays && <p className="text-sm text-destructive">{errors.schedule_weekdays.message}</p>}
+                  <div className="flex gap-3">
+                    <div className="space-y-2 flex-1">
+                      <Label>Start Time</Label>
+                      <Input
+                        type="time"
+                        {...register("schedule_start_time")}
+                      />
+                      {errors.schedule_start_time && <p className="text-sm text-destructive">{errors.schedule_start_time.message}</p>}
+                    </div>
+                    <div className="space-y-2 flex-1">
+                      <Label>End Time</Label>
+                      <Input
+                        type="time"
+                        {...register("schedule_end_time")}
+                      />
+                      {errors.schedule_end_time && <p className="text-sm text-destructive">{errors.schedule_end_time.message}</p>}
+                    </div>
+                  </div>
                 </div>
 
                 <div className="space-y-2 md:col-span-2">

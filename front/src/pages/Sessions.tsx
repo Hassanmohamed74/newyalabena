@@ -21,7 +21,7 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import type { SessionItem, Group, Attendance, Student } from "@/types";
 import {
   Plus, X, Pencil, Trash2, Eye, ChevronLeft,
-  CheckCircle2, QrCode, Lock, Unlock, PlayCircle, Ban
+  CheckCircle2, QrCode, Lock, Unlock, PlayCircle, Ban, ExternalLink
 } from "lucide-react";
 
 const sessionTypes = ["in_person", "online", "hybrid"];
@@ -369,6 +369,13 @@ export default function SessionsPage() {
               <Button variant="outline" size="sm" onClick={() => setShowCancelDialog(true)}><Ban className="h-4 w-4 mr-1" /> Cancel</Button>
             )}
             <Button variant="outline" size="sm" onClick={() => generateQrMutation.mutate(selectedSession.id)}><QrCode className="h-4 w-4 mr-1" /> QR Code</Button>
+            {(() => {
+              const joinUrl = (selectedSession as any).zoom_join_url || selectedSession.group?.zoom_link || null;
+              if (!joinUrl) return null;
+              return (
+                <Button variant="outline" size="sm" onClick={() => window.open(joinUrl, "_blank")}><ExternalLink className="h-4 w-4 mr-1" /> Join Zoom</Button>
+              );
+            })()}
           </div>
         </div>
 
