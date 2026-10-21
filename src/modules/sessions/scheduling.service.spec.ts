@@ -49,6 +49,7 @@ describe('SessionSchedulingService', () => {
   let scheduleSaves: any[];
   let groupSaves: any[];
   let lockedQueries: string[][];
+  let rawQueries: Array<{ sql: string; params: any[] }>;
   let attendanceQueryResult: Array<{ session_id: string }>;
   let candidateSessions: any[];
   let testSlots: any[];
@@ -81,6 +82,7 @@ describe('SessionSchedulingService', () => {
     scheduleSaves = [];
     groupSaves = [];
     lockedQueries = [];
+    rawQueries = [];
     attendanceQueryResult = [];
     candidateSessions = [];
     testSlots = [];
@@ -126,6 +128,7 @@ describe('SessionSchedulingService', () => {
       transaction: jest.fn(async (cb: any) => {
         const em: any = {
           query: jest.fn().mockImplementation(async (sql: string, params?: any[]) => {
+            rawQueries.push({ sql, params: params ?? [] });
             if (/FOR UPDATE/.test(sql)) {
               lockedQueries.push([sql, params?.[0]]);
               return [];
@@ -507,6 +510,87 @@ describe('SessionSchedulingService', () => {
       .catch((e) => e);
     expect(err).toBeInstanceOf(BadRequestException);
     expect(err.getResponse().errors.join(' ')).toMatch(/effective_date/i);
+  });
+
+  // ─── Concurrency safety (advisory locks) & live-group filtering ───
+
+  it('activation takes the group row lock plus teacher/room advisory locks', async () => {
+    await service.activate('g-1');
+
+    // Row lock on the group serializes same-group activations…
+    expect(lockedQueries).toHaveLength(1);
+    expect(lockedQueries[0][0]).toMatch(/FROM groups WHERE id = \$1 FOR UPDATE/);
+    // …and advisory locks serialize cross-group writers on the same
+    // teacher/room, in a deterministic (sorted) order.
+    const advisory = rawQueries
+      .filter((q) => q.sql.includes('pg_advisory_xact_lock'))
+      .map((q) => q.params[0]);
+    expect(advisory).toEqual(['sched.room:room-1', 'sched.teacher:t-1']);
+  });
+
+  it('reschedule takes teacher/room advisory locks for the NEW windows', async () => {
+    await service.reschedule('g-1', {
+      effective_date: '2026-11-08',
+      windows: [{ day_of_week: 1, start_time: '17:00', end_time: '18:30', classroom_id: 'room-2' }],
+    });
+    const advisory = rawQueries
+      .filter((q) => q.sql.includes('pg_advisory_xact_lock'))
+      .map((q) => q.params[0]);
+    expect(advisory).toEqual(['sched.room:room-2', 'sched.teacher:t-1']);
+  });
+
+  it('ignores sessions of CANCELLED groups as conflicts', async () => {
+    candidateSessions = [
+      {
+        id: 's-dead',
+        group_id: 'g-other',
+        classroom_id: 'room-1',
+        date: new Date('2026-11-08T00:00:00Z'),
+        start_time: '18:00:00',
+        end_time: '19:30:00',
+        cancelled_at: null,
+        group: { id: 'g-other', name: 'Cancelled Group', teacher_id: 't-1', status: GroupStatus.CANCELLED },
+      },
+    ];
+
+    const result = await service.activate('g-1');
+    expect(result.generated).toBe(5);
+  });
+
+  it('ignores sessions of COMPLETED groups as conflicts', async () => {
+    candidateSessions = [
+      {
+        id: 's-done',
+        group_id: 'g-other',
+        classroom_id: 'room-1',
+        date: new Date('2026-11-08T00:00:00Z'),
+        start_time: '18:00:00',
+        end_time: '19:30:00',
+        cancelled_at: null,
+        group: { id: 'g-other', name: 'Completed Group', teacher_id: 't-1', status: GroupStatus.COMPLETED },
+      },
+    ];
+
+    const result = await service.activate('g-1');
+    expect(result.generated).toBe(5);
+  });
+
+  it('still blocks on sessions of LIVE groups (status-aware control)', async () => {
+    candidateSessions = [
+      {
+        id: 's-live',
+        group_id: 'g-other',
+        classroom_id: 'room-1',
+        date: new Date('2026-11-08T00:00:00Z'),
+        start_time: '18:00:00',
+        end_time: '19:30:00',
+        cancelled_at: null,
+        group: { id: 'g-other', name: 'Live Group', teacher_id: 't-1', status: GroupStatus.ACTIVE },
+      },
+    ];
+
+    const err = await service.activate('g-1').catch((e) => e);
+    expect(err).toBeInstanceOf(ConflictException);
   });
 });
 

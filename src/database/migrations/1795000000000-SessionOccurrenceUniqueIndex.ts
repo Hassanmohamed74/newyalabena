@@ -12,6 +12,21 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  *    WHERE cancelled_at IS NULL — concurrent activations or retried requests
  *    can never insert the same occurrence twice, while cancelled slots remain
  *    re-usable for a replacement session.
+ *
+ * LIMITATIONS (documented deliberately — review before running on
+ * production data):
+ *  - IRREVERSIBLE DATA LOSS: `down()` only drops the index. The deleted
+ *    duplicate rows cannot be restored by `migration:revert`. Because
+ *    attendances.session_id is ON DELETE CASCADE, any attendance recorded on
+ *    a NEWER duplicate is deleted with it — if a newer duplicate holds
+ *    attendance the oldest does not, back those rows up (or cancel the
+ *    duplicate instead of deleting it) BEFORE running this migration.
+ *  - LOCKING: the dedup DELETE takes row locks on the affected sessions and
+ *    CREATE UNIQUE INDEX takes a SHARE lock blocking concurrent writes for
+ *    its duration. On an academy-sized sessions table this is milliseconds;
+ *    on a very large table (100k+ rows) schedule a maintenance window or
+ *    replace statement 2 with CREATE UNIQUE INDEX CONCURRENTLY run outside a
+ *    transaction.
  */
 export class SessionOccurrenceUniqueIndex1795000000000 implements MigrationInterface {
   name = 'SessionOccurrenceUniqueIndex1795000000000';

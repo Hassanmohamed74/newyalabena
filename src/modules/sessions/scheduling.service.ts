@@ -23,6 +23,7 @@ import {
   toMinutes,
   validateScheduleConfig,
 } from '../../common/utils/recurring-schedule.util';
+import { acquireSchedulingLocks } from '../../common/utils/scheduling-locks.util';
 import { AuthUser, assertBranchAccess } from '../../common/utils/branch-scope';
 
 /** Structured conflict line returned to staff when validation fails. */
@@ -189,8 +190,6 @@ export class SessionSchedulingService {
     if (occurrences.length === 0) return [];
     const conflicts: ScheduleConflict[] = [];
 
-    const from = occurrences[0].date;
-    const to = occurrences[occurrences.length - 1].date;
     const dates = occurrences.map((o) => o.date);
     const roomIds = [...new Set(occurrences.map((o) => o.classroom_id).filter((r): r is string => Boolean(r)))];
 
@@ -243,6 +242,19 @@ export class SessionSchedulingService {
         }
         if (!overlapsOnSameDay(o, s)) continue;
         const other = s.group;
+        // A session of a group that is no longer live (completed/cancelled)
+        // does not reserve teacher/room time — mirrors the group-level
+        // conflict engine in GroupsService.findScheduleConflicts, which also
+        // ignores non-live groups. Rows without a loaded status (defensive)
+        // are still treated as reserving.
+        if (
+          other &&
+          other.status !== undefined &&
+          other.status !== GroupStatus.UPCOMING &&
+          other.status !== GroupStatus.ACTIVE
+        ) {
+          continue;
+        }
         if (other?.teacher_id === group.teacher_id) {
           conflicts.push({
             type: 'teacher',
@@ -393,6 +405,15 @@ export class SessionSchedulingService {
 
       const occurrences = expandOccurrences(windows, startDate, endDate);
 
+      // Cross-group safety: the group ROW lock above only serializes writers
+      // of THIS group. Advisory locks on the teacher and every room involved
+      // make concurrent activations/edits touching the same teacher or room
+      // wait, so the conflict check below can never race a competing insert.
+      await acquireSchedulingLocks(em, [
+        { kind: 'teacher', id: group.teacher_id },
+        ...windows.map((w) => ({ kind: 'room' as const, id: w.classroom_id ?? '' })),
+      ]);
+
       const conflicts = await this.findConflicts(em, group, occurrences);
       if (conflicts.length > 0) {
         throw new ConflictException({
@@ -477,6 +498,13 @@ export class SessionSchedulingService {
       }
       this.assertWindowsDisjoint(windows);
       this.validateMeetingUrl(group);
+
+      // Same cross-group safety as activate(): serialize with any concurrent
+      // activation/reschedule/edit touching this teacher or these rooms.
+      await acquireSchedulingLocks(em, [
+        { kind: 'teacher', id: group.teacher_id },
+        ...windows.map((w) => ({ kind: 'room' as const, id: w.classroom_id ?? '' })),
+      ]);
 
       // Future occurrences under the NEW windows (from the effective date).
       const futureOccurrences = expandOccurrences(windows, effectiveDate, endDate);

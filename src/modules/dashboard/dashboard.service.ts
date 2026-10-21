@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { Lead } from '../../shared/entities/lead.entity';
 import { Student } from '../../shared/entities/student.entity';
@@ -28,7 +29,20 @@ export class DashboardService {
     @InjectRepository(Invoice) private readonly invoiceRepo: Repository<Invoice>,
     @InjectRepository(Payment) private readonly paymentRepo: Repository<Payment>,
     @InjectRepository(Attendance) private readonly attendanceRepo: Repository<Attendance>,
+    private readonly config: ConfigService,
   ) {}
+
+  /**
+   * Session dates are business-calendar dates (academy wall-time). "Today"
+   * for the upcoming-sessions widget must be computed in the academy zone
+   * (APP_TIME_ZONE, default Africa/Cairo), not UTC — otherwise the widget
+   * skips or repeats a day around midnight. Mirrors attendance.service.
+   */
+  private get academyToday(): string {
+    const timeZone = this.config.get<string>('APP_TIME_ZONE', 'Africa/Cairo');
+    // 'en-CA' formats as YYYY-MM-DD.
+    return new Intl.DateTimeFormat('en-CA', { timeZone }).format(new Date());
+  }
 
   async getStats(user: AuthUser) {
     const branchFilter = effectiveBranchFilter(user);
@@ -70,7 +84,7 @@ export class DashboardService {
       this.sumOutstanding(branchFilter),
       this.sumGroupCapacity(branchFilter),
       this.sumEnrolledStudents(branchFilter),
-      this.sessionStats(branchFilter, today),
+      this.sessionStats(branchFilter),
       
       this.leadRepo.createQueryBuilder('x').orderBy('x.created_at', 'DESC').take(5).getMany(),
       scoped(this.paymentRepo, false).orderBy('x.paid_at', 'DESC').take(5).getMany(),
@@ -151,11 +165,11 @@ export class DashboardService {
     return { enrolled: Number(row?.enrolled ?? 0) };
   }
 
-  private async sessionStats(branchFilter: string | undefined, today: Date) {
+  private async sessionStats(branchFilter: string | undefined) {
     const qb = this.sessionRepo
       .createQueryBuilder('s')
       .leftJoinAndSelect('s.group', 'g')
-      .where('s.date >= :d', { d: today.toISOString().slice(0, 10) })
+      .where('s.date >= :d', { d: this.academyToday })
       .andWhere('s.cancelled_at IS NULL')
       .orderBy('s.date', 'ASC')
       .take(5);

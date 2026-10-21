@@ -199,6 +199,11 @@ export class GroupsService {
   async update(id: string, dto: UpdateGroupDto): Promise<Group> {
     const group = await this.findOne(id);
 
+    // Snapshot the fixed meeting URL BEFORE the patch so we can keep the
+    // group's generated sessions consistent with it (see below).
+    const previousZoomLink = group.zoom_link ?? null;
+    const previousZoomMeetingId = group.zoom_meeting_id ?? null;
+
     if (dto.name !== undefined) group.name = dto.name;
     if (dto.courseId !== undefined) group.course_id = dto.courseId;
     if (dto.branchId !== undefined) group.branch_id = dto.branchId;
@@ -216,6 +221,31 @@ export class GroupsService {
     if (dto.onmeet_meeting_id !== undefined) group.onmeet_meeting_id = dto.onmeet_meeting_id || null;
 
     const saved = await this.repo.save(group);
+
+    // The group's meeting URL is FIXED per group (requirement: every
+    // generated Session resolves to the Group's link). When it changes,
+    // keep already-generated FUTURE sessions consistent: only rows still
+    // carrying the OLD group link (auto-generated copies) are updated —
+    // per-session custom links, past sessions and cancelled sessions are
+    // never touched. Sessions with no link keep the read-time fallback,
+    // which already resolves to the CURRENT group link.
+    if (
+      dto.zoom_link !== undefined &&
+      ((previousZoomLink ?? null) !== (saved.zoom_link ?? null) ||
+        (dto.zoom_meeting_id !== undefined && (previousZoomMeetingId ?? null) !== (saved.zoom_meeting_id ?? null)))
+    ) {
+      await this.repo.query(
+        `UPDATE sessions
+            SET zoom_join_url = $2,
+                zoom_meeting_id = $3
+          WHERE group_id = $1
+            AND cancelled_at IS NULL
+            AND date >= CURRENT_DATE
+            AND (zoom_join_url = $4 OR ($4::varchar IS NULL AND zoom_join_url IS NULL))`,
+        [saved.id, saved.zoom_link ?? null, saved.zoom_meeting_id ?? null, previousZoomLink],
+      );
+    }
+
     await this.syncChatRoomSafely(saved.id); // picks up teacher/substitute changes
     return saved;
   }

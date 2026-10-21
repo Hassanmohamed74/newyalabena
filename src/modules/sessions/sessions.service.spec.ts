@@ -22,6 +22,7 @@ function makeRepo() {
   return {
     createQueryBuilder: jest.fn(),
     findOne: jest.fn(),
+    find: jest.fn().mockResolvedValue([]),
     create: jest.fn((p) => ({ ...p })),
     save: jest.fn(async (p) => ({ id: 'session-1', ...p })),
     remove: jest.fn(async () => undefined),
@@ -34,6 +35,9 @@ describe('SessionsService — conflict detection & auto-meetings (SRS 4.5.2 / 5.
   let groupRepo: ReturnType<typeof makeRepo>;
   let zoom: any;
   let onmeet: any;
+  let dataSource: any;
+  let txQueries: Array<{ sql: string; params: any[] }>;
+  let txOpened: number;
 
   const GROUP = {
     id: 'g1',
@@ -47,7 +51,27 @@ describe('SessionsService — conflict detection & auto-meetings (SRS 4.5.2 / 5.
     groupRepo = makeRepo();
     zoom = { isConfigured: jest.fn().mockReturnValue(false), createMeeting: jest.fn() };
     onmeet = { isConfigured: jest.fn().mockReturnValue(false), createMeeting: jest.fn() };
-    service = new SessionsService(repo, groupRepo, zoom, onmeet, new ConfigService({}));
+    txQueries = [];
+    txOpened = 0;
+    // Emulates dataSource.transaction by running the callback against an
+    // EntityManager whose repositories are the SAME mocks, so conflict
+    // queries and writes keep flowing through the scripted jest mocks.
+    dataSource = {
+      transaction: jest.fn(async (cb: any) => {
+        txOpened += 1;
+        const em: any = {
+          query: jest.fn(async (sql: string, params?: any[]) => {
+            txQueries.push({ sql, params: params ?? [] });
+            return [];
+          }),
+          getRepository: jest.fn((entity: any) =>
+            entity?.name === 'Group' ? groupRepo : repo,
+          ),
+        };
+        return cb(em);
+      }),
+    };
+    service = new SessionsService(repo, groupRepo, zoom, onmeet, new ConfigService({}), dataSource);
   });
 
   // ---------- detectConflicts ----------
@@ -331,6 +355,79 @@ describe('SessionsService — conflict detection & auto-meetings (SRS 4.5.2 / 5.
       end_time: '11:30:00',
       force: true,
     });
+    expect(repo.save).toHaveBeenCalled();
+  });
+
+  // ---------- concurrency safety: locked transactions ----------
+
+  it('create (non-force) row-locks the group + takes teacher/room advisory locks in one transaction', async () => {
+    repo.createQueryBuilder.mockReturnValue(makeQb([]));
+    groupRepo.findOne.mockResolvedValue({ ...GROUP, mode: GroupMode.IN_PERSON });
+
+    await service.create({
+      group_id: 'g1',
+      classroom_id: 'c1',
+      date: '2026-10-01',
+      start_time: '10:00:00',
+      end_time: '11:00:00',
+    });
+
+    expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+    expect(txQueries.some((q) => /FROM groups WHERE id = \$1 FOR UPDATE/.test(q.sql))).toBe(true);
+    const advisory = txQueries
+      .filter((q) => q.sql.includes('pg_advisory_xact_lock'))
+      .map((q) => q.params[0]);
+    expect(advisory).toEqual(['sched.room:c1', 'sched.teacher:t1']);
+    expect(repo.save).toHaveBeenCalled();
+  });
+
+  it('create with force=true skips the transaction and locks entirely', async () => {
+    repo.createQueryBuilder.mockReturnValue(makeQb([]));
+    groupRepo.findOne.mockResolvedValue({ ...GROUP, mode: GroupMode.IN_PERSON });
+
+    await service.create({
+      group_id: 'g1',
+      date: '2026-10-01',
+      start_time: '10:00:00',
+      end_time: '11:00:00',
+      force: true,
+    });
+
+    expect(dataSource.transaction).not.toHaveBeenCalled();
+    expect(repo.save).toHaveBeenCalled();
+  });
+
+  it('update with a changed window locks the group + teacher/room in one transaction', async () => {
+    repo.findOne.mockResolvedValue(existingSession());
+    repo.createQueryBuilder
+      .mockReturnValueOnce(makeQb([])) // group overlap
+      .mockReturnValueOnce(makeQb([])) // teacher overlap
+      .mockReturnValueOnce(makeQb([])); // classroom overlap
+    groupRepo.findOne.mockResolvedValue(GROUP);
+    groupRepo.find.mockResolvedValue([GROUP]);
+
+    await service.update('s-1', {
+      date: '2026-10-08',
+      start_time: '12:00:00',
+      end_time: '13:00:00',
+    });
+
+    expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+    expect(txQueries.some((q) => /FROM groups WHERE id = ANY\(\$1::uuid\[\]\) ORDER BY id FOR UPDATE/.test(q.sql))).toBe(true);
+    const advisory = txQueries
+      .filter((q) => q.sql.includes('pg_advisory_xact_lock'))
+      .map((q) => q.params[0]);
+    // Old and new classroom are both c1 (unchanged) → one deduped room lock.
+    expect(advisory).toEqual(['sched.room:c1', 'sched.teacher:t1']);
+    expect(repo.save).toHaveBeenCalled();
+  });
+
+  it('update without a window change keeps the unlocked legacy path', async () => {
+    repo.findOne.mockResolvedValue(existingSession());
+
+    await service.update('s-1', { notes: 'no window change' });
+
+    expect(dataSource.transaction).not.toHaveBeenCalled();
     expect(repo.save).toHaveBeenCalled();
   });
 });
