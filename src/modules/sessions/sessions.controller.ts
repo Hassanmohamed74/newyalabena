@@ -26,7 +26,6 @@ export class SessionsController {
         groupId: { type: 'string', example: '123e4567-e89b-12d3-a456-426614174000' },
         title: { type: 'string', example: 'Introduction to Grammar' },
         session_type: { type: 'string', enum: ['in_person', 'online', 'hybrid'], example: 'online' },
-        meeting_link: { type: 'string', example: 'https://zoom.us/j/123456789' },
         classroomId: { type: 'string', example: '123e4567-e89b-12d3-a456-426614174000' },
         start_time: { type: 'string', format: 'date-time', example: '2026-09-01T10:00:00Z' },
         end_time: { type: 'string', format: 'date-time', example: '2026-09-01T12:00:00Z' },
@@ -84,7 +83,6 @@ export class SessionsController {
       properties: {
         title: { type: 'string', example: 'Advanced Grammar - Updated' },
         session_type: { type: 'string', enum: ['in_person', 'online', 'hybrid'], example: 'hybrid' },
-        meeting_link: { type: 'string', example: 'https://zoom.us/j/987654321' },
         status: { type: 'string', example: 'scheduled' },
       },
     }

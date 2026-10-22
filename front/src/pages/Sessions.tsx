@@ -34,7 +34,6 @@ const sessionSchema = z.object({
   topic: z.string().optional(),
   notes: z.string().optional(),
   session_type: z.string().min(1, "Type is required"),
-  meeting_link: z.string().optional(),
   classroomId: z.string().optional(),
   date: z.string().min(1, "Date is required"),
   start_time: z.string().optional(),
@@ -219,7 +218,6 @@ export default function SessionsPage() {
       topic: data.topic,
       notes: data.notes,
       session_type: data.session_type,
-      meeting_link: data.meeting_link,
       classroomId: data.classroomId,
       date: data.date,
       start_time: data.start_time,
@@ -241,7 +239,6 @@ export default function SessionsPage() {
     setValue("topic", session.topic || "");
     setValue("notes", session.notes || "");
     setValue("session_type", session.session_type || "in_person");
-    setValue("meeting_link", session.meeting_link || "");
     setValue("classroomId", session.classroomId || session.classroom_id || "");
     setValue("date", session.date ? String(session.date).slice(0, 10) : "");
     setValue("start_time", session.start_time ? String(session.start_time).slice(0, 5) : "");
@@ -373,7 +370,10 @@ export default function SessionsPage() {
               const joinUrl = (selectedSession as any).zoom_join_url || selectedSession.group?.zoom_link || null;
               if (!joinUrl) return null;
               return (
-                <Button variant="outline" size="sm" onClick={() => window.open(joinUrl, "_blank")}><ExternalLink className="h-4 w-4 mr-1" /> Join Zoom</Button>
+                <>
+                  <Button variant="outline" size="sm" onClick={() => window.open(joinUrl, "_blank")}><ExternalLink className="h-4 w-4 mr-1" /> Join Zoom</Button>
+                  <p className="text-xs text-muted-foreground">Link is managed from the Group settings</p>
+                </>
               );
             })()}
           </div>
@@ -513,7 +513,6 @@ export default function SessionsPage() {
                 <div className="grid grid-cols-2 gap-2">
                   <span className="text-muted-foreground">Topic:</span><span>{selectedSession.topic || "—"}</span>
                   <span className="text-muted-foreground">Notes:</span><span>{selectedSession.notes || "—"}</span>
-                  <span className="text-muted-foreground">Meeting Link:</span><span>{selectedSession.meeting_link ? <a href={selectedSession.meeting_link} target="_blank" rel="noopener noreferrer" className="text-primary underline">Open Link</a> : "—"}</span>
                   <span className="text-muted-foreground">Classroom:</span><span>{(selectedSession as any).classroomId || (selectedSession as any).classroom_id || "—"}</span>
                   <span className="text-muted-foreground">Recording:</span><span>{(selectedSession as any).recording_link || (selectedSession as any).recording_url ? <a href={(selectedSession as any).recording_link || (selectedSession as any).recording_url} target="_blank" rel="noopener noreferrer" className="text-primary underline">View Recording</a> : "—"}</span>
                 </div>
@@ -607,10 +606,6 @@ export default function SessionsPage() {
                 <div className="space-y-2">
                   <Label>End Time</Label>
                   <Input type="time" {...register("end_time")} />
-                </div>
-                <div className="space-y-2">
-                  <Label>Meeting Link</Label>
-                  <Input {...register("meeting_link")} placeholder="Zoom/OnMeet URL" />
                 </div>
                 <div className="space-y-2">
                   <Label>Classroom ID</Label>

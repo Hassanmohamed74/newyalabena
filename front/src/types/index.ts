@@ -229,7 +229,6 @@ export interface SessionItem {
   topic?: string;
   notes?: string;
   session_type: string;
-  meeting_link?: string;
   /** Resolved fixed meeting URL: per-session link, else the group's link. */
   zoom_join_url?: string | null;
   recording_link?: string;

@@ -9,15 +9,12 @@ import { SessionsController } from './sessions.controller';
 import { SessionsService } from './sessions.service';
 import { SessionSchedulingService } from './scheduling.service';
 import { AttendancesModule } from '../attendance/attendance.module';
-import { IntegrationsModule } from '../integrations/integrations.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Session, Attendance, Group, GroupSchedule, TestSlot]),
     // Reused for QR check-in codes + student self check-in on session routes.
     AttendancesModule,
-    // Zoom/OnMeet auto-creation for online sessions (SRS 5.1/5.2).
-    IntegrationsModule,
   ],
   controllers: [SessionsController],
   providers: [SessionsService, SessionSchedulingService],

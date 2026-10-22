@@ -7,9 +7,6 @@ import { Group } from '../../shared/entities/group.entity';
 import { Student } from '../../shared/entities/student.entity';
 import { Attendance } from '../../shared/entities/attendance.entity';
 import { AttendanceStatus } from '../../common/enums/attendance-status.enum';
-import { GroupMode } from '../../common/enums/group-mode.enum';
-import { ZoomService } from '../integrations/zoom.service';
-import { OnMeetService } from '../integrations/onmeet.service';
 import { acquireSchedulingLocks } from '../../common/utils/scheduling-locks.util';
 
 export interface SessionConflict {
@@ -24,8 +21,6 @@ export class SessionsService {
     private readonly repo: Repository<Session>,
     @InjectRepository(Group)
     private readonly groupRepo: Repository<Group>,
-    private readonly zoom: ZoomService,
-    private readonly onmeet: OnMeetService,
     private readonly config: ConfigService,
     private readonly dataSource: DataSource,
   ) {}
@@ -44,17 +39,6 @@ export class SessionsService {
   private extractDate(dateTimeStr?: string): string | undefined {
     if (!dateTimeStr) return undefined;
     return dateTimeStr.includes('T') ? dateTimeStr.split('T')[0] : dateTimeStr;
-  }
-
-  /** Minutes between two HH:mm:ss strings (for meeting duration). */
-  private durationMinutes(start?: string, end?: string): number {
-    if (!start || !end) return 60;
-    const toMin = (t: string) => {
-      const [h, m] = t.split(':').map(Number);
-      return (h || 0) * 60 + (m || 0);
-    };
-    const diff = toMin(end) - toMin(start);
-    return diff > 0 ? diff : 60;
   }
 
   // ─── Conflict detection (SRS 4.5.2) ──────────────────────────
@@ -166,14 +150,12 @@ export class SessionsService {
     if (!payload.mode && group?.mode) payload.mode = group.mode;
 
     const insertSession = async (em?: EntityManager): Promise<Session> => {
-      // Auto-create a meeting for online/hybrid sessions (SRS 5.1/5.2).
-      // Never blocks creation when no provider is configured or all fail.
-      if (
-        (payload.mode === GroupMode.ONLINE || payload.mode === GroupMode.HYBRID) &&
-        !payload.zoom_join_url &&
-        !payload.onmeet_meeting_id
-      ) {
-        await this.attachMeeting(payload, group);
+      // Copy the group's fixed Zoom link into the session so all sessions
+      // of an online/hybrid group share the same meeting link. The link is
+      // entered once on the Group and never created per-session via API.
+      if (group && group.zoom_link) {
+        payload.zoom_join_url = group.zoom_link;
+        payload.zoom_meeting_id = group.zoom_meeting_id ?? null;
       }
       const target = em ? em.getRepository(Session) : this.repo;
       const session = target.create(payload as Partial<Session>);
@@ -216,35 +198,6 @@ export class SessionsService {
       }
       return insertSession(em);
     });
-  }
-
-  /** Try Zoom, fall back to OnMeet, swallow provider errors (never block). */
-  private async attachMeeting(payload: any, group: Group | null) {
-    const input = {
-      topic: payload.topic || payload.title || group?.name || 'SpeakUp Session',
-      startTime: `${payload.date}T${payload.start_time}`,
-      duration: this.durationMinutes(payload.start_time, payload.end_time),
-    };
-
-    if (this.zoom.isConfigured()) {
-      try {
-        const meeting = await this.zoom.createMeeting(input);
-        payload.zoom_meeting_id = meeting.meeting_id;
-        payload.zoom_join_url = meeting.join_url;
-        return;
-      } catch {
-        /* fall through to OnMeet */
-      }
-    }
-    if (this.onmeet.isConfigured()) {
-      try {
-        const meeting = await this.onmeet.createMeeting(input);
-        payload.onmeet_meeting_id = meeting.meeting_id;
-        payload.onmeet_join_url = meeting.join_url;
-      } catch {
-        /* provider down — session still gets created without a link */
-      }
-    }
   }
 
   async findAll(

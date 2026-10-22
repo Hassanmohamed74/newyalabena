@@ -70,6 +70,14 @@ const groupSchema = z.object({
 }, {
   message: "End time must be after start time",
   path: ["schedule_end_time"],
+}).refine((data) => {
+  if ((data.mode === "online" || data.mode === "hybrid") && !data.zoom_link) {
+    return false;
+  }
+  return true;
+}, {
+  message: "Zoom link is required for online/hybrid groups",
+  path: ["zoom_link"],
 });
 
 type GroupForm = z.infer<typeof groupSchema>;
@@ -1312,7 +1320,7 @@ export default function GroupsPage() {
                 </div>
 
                 <div className="space-y-2 md:col-span-2">
-                  <Label>Fixed Zoom Link (shared by all sessions)</Label>
+                  <Label>Zoom Recurring Meeting Link</Label>
                   <Input
                     type="url"
                     placeholder="https://zoom.us/j/…"
@@ -1320,7 +1328,7 @@ export default function GroupsPage() {
                   />
                   {errors.zoom_link && <p className="text-sm text-destructive">{errors.zoom_link.message}</p>}
                   <p className="text-xs text-muted-foreground">
-                    One meeting URL per group — every generated session resolves to this link.
+                    Create a recurring meeting in Zoom for this group, then paste its link here once. All sessions of this group will use it automatically.
                   </p>
                 </div>
               </div>

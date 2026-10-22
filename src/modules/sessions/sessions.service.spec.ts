@@ -29,12 +29,10 @@ function makeRepo() {
   } as any;
 }
 
-describe('SessionsService — conflict detection & auto-meetings (SRS 4.5.2 / 5.1)', () => {
+describe('SessionsService — conflict detection & group-link copy', () => {
   let service: SessionsService;
   let repo: ReturnType<typeof makeRepo>;
   let groupRepo: ReturnType<typeof makeRepo>;
-  let zoom: any;
-  let onmeet: any;
   let dataSource: any;
   let txQueries: Array<{ sql: string; params: any[] }>;
   let txOpened: number;
@@ -44,13 +42,13 @@ describe('SessionsService — conflict detection & auto-meetings (SRS 4.5.2 / 5.
     teacher_id: 't1',
     substitute_teacher_id: null,
     mode: GroupMode.IN_PERSON,
+    zoom_link: null,
+    zoom_meeting_id: null,
   };
 
   beforeEach(() => {
     repo = makeRepo();
     groupRepo = makeRepo();
-    zoom = { isConfigured: jest.fn().mockReturnValue(false), createMeeting: jest.fn() };
-    onmeet = { isConfigured: jest.fn().mockReturnValue(false), createMeeting: jest.fn() };
     txQueries = [];
     txOpened = 0;
     // Emulates dataSource.transaction by running the callback against an
@@ -71,7 +69,7 @@ describe('SessionsService — conflict detection & auto-meetings (SRS 4.5.2 / 5.
         return cb(em);
       }),
     };
-    service = new SessionsService(repo, groupRepo, zoom, onmeet, new ConfigService({}), dataSource);
+    service = new SessionsService(repo, groupRepo, new ConfigService({}), dataSource);
   });
 
   // ---------- detectConflicts ----------
@@ -193,17 +191,15 @@ describe('SessionsService — conflict detection & auto-meetings (SRS 4.5.2 / 5.
     );
   });
 
-  // ---------- auto meeting (SRS 5.1) ----------
+  // ---------- group link copy ----------
 
-  it('auto-creates a Zoom meeting for online sessions when Zoom is configured', async () => {
+  it('copies group.zoom_link into session.zoom_join_url for online/hybrid sessions', async () => {
     repo.createQueryBuilder.mockReturnValue(makeQb([]));
-    groupRepo.findOne.mockResolvedValue({ ...GROUP, mode: GroupMode.ONLINE });
-    zoom.isConfigured.mockReturnValue(true);
-    zoom.createMeeting.mockResolvedValue({
-      meeting_id: 'zm-123',
-      join_url: 'https://zoom.us/j/zm-123',
-      password: null,
-      start_url: null,
+    groupRepo.findOne.mockResolvedValue({
+      ...GROUP,
+      mode: GroupMode.ONLINE,
+      zoom_link: 'https://zoom.us/j/group-link',
+      zoom_meeting_id: 'zm-group-123',
     });
 
     await service.create({
@@ -215,43 +211,20 @@ describe('SessionsService — conflict detection & auto-meetings (SRS 4.5.2 / 5.
 
     expect(repo.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        zoom_meeting_id: 'zm-123',
-        zoom_join_url: 'https://zoom.us/j/zm-123',
+        zoom_join_url: 'https://zoom.us/j/group-link',
+        zoom_meeting_id: 'zm-group-123',
       }),
     );
   });
 
-  it('falls back to OnMeet when Zoom creation fails', async () => {
+  it('does not set zoom_join_url when group has no zoom_link', async () => {
     repo.createQueryBuilder.mockReturnValue(makeQb([]));
-    groupRepo.findOne.mockResolvedValue({ ...GROUP, mode: GroupMode.ONLINE });
-    zoom.isConfigured.mockReturnValue(true);
-    zoom.createMeeting.mockRejectedValue(new Error('zoom down'));
-    onmeet.isConfigured.mockReturnValue(true);
-    onmeet.createMeeting.mockResolvedValue({
-      meeting_id: 'om-9',
-      join_url: 'https://onmeet.example/om-9',
-      password: null,
-      start_url: null,
+    groupRepo.findOne.mockResolvedValue({
+      ...GROUP,
+      mode: GroupMode.ONLINE,
+      zoom_link: null,
+      zoom_meeting_id: null,
     });
-
-    await service.create({
-      group_id: 'g1',
-      date: '2026-10-01',
-      start_time: '10:00:00',
-      end_time: '11:00:00',
-    });
-
-    expect(repo.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        onmeet_meeting_id: 'om-9',
-        onmeet_join_url: 'https://onmeet.example/om-9',
-      }),
-    );
-  });
-
-  it('never blocks session creation when no meeting provider is configured', async () => {
-    repo.createQueryBuilder.mockReturnValue(makeQb([]));
-    groupRepo.findOne.mockResolvedValue({ ...GROUP, mode: GroupMode.ONLINE });
 
     const saved = await service.create({
       group_id: 'g1',
@@ -261,24 +234,7 @@ describe('SessionsService — conflict detection & auto-meetings (SRS 4.5.2 / 5.
     });
 
     expect(saved.id).toBe('session-1');
-    expect(zoom.createMeeting).not.toHaveBeenCalled();
-    expect(onmeet.createMeeting).not.toHaveBeenCalled();
-  });
-
-  it('respects a manual meeting link and skips auto-creation', async () => {
-    repo.createQueryBuilder.mockReturnValue(makeQb([]));
-    groupRepo.findOne.mockResolvedValue({ ...GROUP, mode: GroupMode.ONLINE });
-    zoom.isConfigured.mockReturnValue(true);
-
-    await service.create({
-      group_id: 'g1',
-      date: '2026-10-01',
-      start_time: '10:00:00',
-      end_time: '11:00:00',
-      zoom_join_url: 'https://zoom.us/j/manual',
-    });
-
-    expect(zoom.createMeeting).not.toHaveBeenCalled();
+    expect(saved.zoom_join_url).toBeUndefined();
   });
 
   // ---------- update: single-session editing with conflict validation ----------
