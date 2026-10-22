@@ -993,7 +993,7 @@ export default function ActivitiesPage() {
                         dto: {
                           records: attendance.records
                             .filter((r) => r.status !== "cancelled")
-                            .map((r) => ({ student_id: r.student_id, status: "attended" as any })),
+                            .map((r) => ({ student_id: r.student_id, status: "attended" })),
                         },
                       })
                     }
@@ -1024,7 +1024,7 @@ export default function ActivitiesPage() {
                               activityId: activity.id,
                               dto: {
                                 records: [
-                                  { student_id: rec.student_id, status: "attended" as any },
+                                  { student_id: rec.student_id, status: "attended" },
                                 ],
                               },
                             })
@@ -1041,7 +1041,7 @@ export default function ActivitiesPage() {
                               activityId: activity.id,
                               dto: {
                                 records: [
-                                  { student_id: rec.student_id, status: "no_show" as any },
+                                  { student_id: rec.student_id, status: "no_show" },
                                 ],
                               },
                             })
@@ -1058,7 +1058,7 @@ export default function ActivitiesPage() {
                               activityId: activity.id,
                               dto: {
                                 records: [
-                                  { student_id: rec.student_id, status: "registered" as any },
+                                  { student_id: rec.student_id, status: "registered" },
                                 ],
                               },
                             })

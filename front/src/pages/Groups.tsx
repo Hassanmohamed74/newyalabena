@@ -498,7 +498,7 @@ export default function GroupsPage() {
             <option value="">
               {(enrollableStudents ?? []).length === 0 ? "No students match" : "Select student…"}
             </option>
-            {(enrollableStudents ?? []).map((s: any) => {
+            {(enrollableStudents ?? []).map((s) => {
               const label = s.user
                 ? `${s.user.first_name ?? ""} ${s.user.last_name ?? ""}`.trim()
                 : s.id.slice(0, 8);
@@ -711,10 +711,10 @@ export default function GroupsPage() {
       teacherId: data.teacherId,
       substitute_teacher_id: data.substitute_teacher_id || undefined,
       capacity: Number(data.capacity),
-      mode: data.mode as any,
+      mode: data.mode,
       start_date: data.start_date,
       end_date: data.end_date,
-      status: data.status as any,
+      status: data.status,
       zoom_link: data.zoom_link?.trim() || null,
     };
 

@@ -15,6 +15,7 @@ import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { TwoFactorLoginDto } from './dto/two-factor.dto';
+import { EmailService } from '../email/email.service';
 
 @Injectable()
 export class AuthService {
@@ -23,6 +24,7 @@ export class AuthService {
     @InjectRepository(User) private userRepo: Repository<User>,
     @InjectRepository(UserRole) private userRoleRepo: Repository<UserRole>,
     @InjectRepository(Role) private roleRepo: Repository<Role>,
+    private emailService: EmailService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -162,8 +164,13 @@ export class AuthService {
     });
     await this.userRepo.manager.save(resetToken);
 
-    // TODO: Send reset email via email service with the token link
-    // await this.emailService.sendResetPassword(email, token);
+    // Send reset email via email service with the token link
+    const resetLink = `${this.config.get<string>('APP_URL')}/auth/reset?token=${token}`;
+    await this.emailService.send({
+      to: email,
+      subject: 'Password Reset Link',
+      html: `<p>Click <a href="${resetLink}">here</a> to reset your password.</p>`,
+    });
 
     return { message: 'Reset link sent to your email' };
   }
