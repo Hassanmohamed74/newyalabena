@@ -36,10 +36,10 @@ const groupSchema = z.object({
   teacherId: z.string().min(1, "Teacher is required"),
   substitute_teacher_id: z.string().optional(),
   capacity: z.coerce.number().min(1, "Capacity must be at least 1"),
-  mode: z.string().optional(),
+  mode: z.enum(["in_person", "online", "hybrid"]).optional(),
   start_date: z.string().min(1, "Start date is required"),
   end_date: z.string().min(1, "End date is required"),
-  status: z.string().optional(),
+  status: z.enum(["upcoming", "active", "completed", "cancelled"]).optional(),
   /** Recurring schedule: selected weekdays (0 = Sunday … 6 = Saturday). */
   schedule_weekdays: z
     .array(z.coerce.number().min(0).max(6))
@@ -743,15 +743,17 @@ export default function GroupsPage() {
           (r): r is PromiseRejectedResult => r.status === "rejected"
         );
         const succeeded = scheduleResults.filter(
-          (r): r is PromiseFulfilledResult => r.status === "fulfilled"
+          (r): r is PromiseFulfilledResult<GroupSchedule> =>
+            r.status === "fulfilled"
         );
+
+        const succeededCount = succeeded.length;
 
         if (failed.length > 0) {
           // Group was created successfully; do NOT roll it back.
           // Report which windows failed and which succeeded, and give the
           // user a safe recovery path (re‑try via “Update Schedule” later).
           const failedMsgs = failed.map((f) => f.reason?.message || "Unknown schedule error");
-          const succeededCount = succeeded.length;
           throw new Error(
             `Group created successfully (${
               succeededCount > 0 ? succeededCount + ' schedule window' : 'no schedule windows'
@@ -797,7 +799,7 @@ export default function GroupsPage() {
     setValue("status", group.status || "upcoming");
     setValue("zoom_link", group.zoom_link || "");
     // Recurring schedule: populate from the first schedule window if present.
-    const firstSch = (group.schedules ?? [])[0];
+    const firstSch = (group.schedule ?? [])[0];
     if (firstSch) {
       setValue("schedule_weekdays", [firstSch.day_of_week]);
       setValue("schedule_start_time", String(firstSch.start_time).slice(0, 5));
