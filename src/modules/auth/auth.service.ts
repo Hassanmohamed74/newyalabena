@@ -2,6 +2,7 @@ import { Injectable, UnauthorizedException, ConflictException, InternalServerErr
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 import { authenticator } from 'otplib';
 import * as QRCode from 'qrcode';
@@ -25,6 +26,7 @@ export class AuthService {
     @InjectRepository(UserRole) private userRoleRepo: Repository<UserRole>,
     @InjectRepository(Role) private roleRepo: Repository<Role>,
     private emailService: EmailService,
+    private config: ConfigService,
   ) {}
 
   async register(dto: RegisterDto) {
