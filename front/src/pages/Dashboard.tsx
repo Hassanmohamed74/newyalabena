@@ -100,6 +100,9 @@ export default function DashboardPage() {
   const defaultKind = eligibleKinds.length > 0 ? eligibleKinds[0] : "generic";
 
   // Multi-role users: show a tab switcher at the top.
+  const Component = DASHBOARD_COMPONENTS[defaultKind];
+
+  // Multi-role users: show a tab switcher at the top.
   if (eligibleKinds.length > 1) {
     const [activeKind, setActiveKind] = React.useState<DashboardKind>(defaultKind);
 
@@ -126,6 +129,7 @@ export default function DashboardPage() {
       </div>
     );
   }
-
-  const Component = DASHBOARD_COMPONENTS[defaultKind];
   return <Component />;
+}
+
+
