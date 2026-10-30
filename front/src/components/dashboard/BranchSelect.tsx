@@ -1,18 +1,19 @@
-import React from "react";
 import { useTranslation } from "react-i18next";
 import { useAuthStore } from "@/store/authStore";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { cn } from "@/lib/utils";
 
 interface BranchSelectProps {
   className?: string;
+  branches?: { id: string; name: string }[];
   onChange?: (branchId: string | undefined) => void;
 }
 
-export function BranchSelect({ className, onChange }: BranchSelectProps) {
+export function BranchSelect({ className, branches: branchesProp = [], onChange }: BranchSelectProps) {
   const { t } = useTranslation("dashboard");
   const user = useAuthStore((s) => s.user);
-  const branches = user?.branches ?? [];
-  const currentBranch = user?.branchId ?? user?.branch_id;
+  const branches = branchesProp.length > 0 ? branchesProp : ((user as any)?.branches ?? []);
+  const currentBranch = user?.branch_id;
 
   const isSuperAdmin = Array.isArray(user?.roles) && user.roles.includes("super_admin");
 
@@ -23,9 +24,8 @@ export function BranchSelect({ className, onChange }: BranchSelectProps) {
       onValueChange={(v) => {
         onChange?.(v === "" ? undefined : v);
       }}
-      className={className}
     >
-      <SelectTrigger className="w-[200px]">
+      <SelectTrigger className={cn("w-[200px]", className)}>
         <SelectValue placeholder={currentBranch ? branches.find((b: any) => b.id === currentBranch)?.name ?? t("selectBranch") : t("selectBranch")} />
       </SelectTrigger>
       <SelectContent>

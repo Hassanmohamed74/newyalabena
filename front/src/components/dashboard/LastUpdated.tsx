@@ -4,7 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { reloadServices } from "@/utils/dashboardCache";
 import { RefreshCw } from "lucide-react";
 
-export function LastUpdated({ message = "Refreshing data..." }: { message?: string }) {
+export function LastUpdated() {
   const { t } = useTranslation("dashboard");
   const qc = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);

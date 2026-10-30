@@ -1,17 +1,14 @@
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
 import { useAuthStore } from "@/store/authStore";
 import { dashboardApi } from "@/api/dashboard";
 import { StatCard } from "@/components/dashboard/StatCard";
-import { TrendBadge } from "@/components/dashboard/TrendBadge";
 import { SectionCard } from "@/components/dashboard/SectionCard";
 import { AlertList } from "@/components/dashboard/AlertList";
 import { PeriodFilter } from "@/components/dashboard/PeriodFilter";
 import { BranchSelect } from "@/components/dashboard/BranchSelect";
 import { formatCurrency, formatNumber, formatPercent } from "@/lib/formatters";
-import type { DashboardMetrics, DashboardRecentLead, DashboardRecentPayment, DashboardRecentSession } from "@/types/dashboard";
+import type { DashboardMetrics } from "@/types/dashboard";
 
 /**
  * Legacy administrative dashboard.
@@ -30,7 +27,7 @@ export default function LegacyAdminDashboard() {
 
   const { data: stats, isLoading, error, refetch } = useQuery<DashboardMetrics>({
     queryKey: ["dashboard-stats"],
-    queryFn: () => dashboardApi.getStats(),
+    queryFn: () => dashboardApi.getStats() as unknown as Promise<DashboardMetrics>,
     retry: false,
     staleTime: 60_000,
   });
@@ -66,7 +63,7 @@ export default function LegacyAdminDashboard() {
 
   const kpis = stats?.kpis ?? {};
   const alerts = stats?.alerts ?? [];
-  const recentItems = stats?.recent_items ?? {};
+  const recentItems: DashboardMetrics["recent_items"] = stats?.recent_items ?? {};
   const attendance = stats?.attendance_summary ?? { present: 0, absent: 0, late: 0 };
 
   const totalAttendances =
@@ -202,9 +199,9 @@ export default function LegacyAdminDashboard() {
         <div className="grid gap-6 md:grid-cols-3">
           <div className="flex flex-col gap-2">
             <h3 className="text-sm font-semibold">{t("sections.leads")}</h3>
-            {(recentItems.leads as DashboardRecentLead[] | undefined)?.length > 0 ? (
+            {(recentItems.leads ?? []).length > 0 ? (
               <ul className="space-y-1 text-sm">
-                {(recentItems.leads as DashboardRecentLead[]).slice(0, 5).map((lead) => (
+                {(recentItems.leads ?? []).slice(0, 5).map((lead) => (
                   <li key={lead.id} className="flex justify-between text-muted-foreground">
                     <span>{lead.first_name} {lead.last_name}</span>
                     <span className="font-medium">{lead.status}</span>
@@ -217,9 +214,9 @@ export default function LegacyAdminDashboard() {
           </div>
           <div className="flex flex-col gap-2">
             <h3 className="text-sm font-semibold">Recent Payments</h3>
-            {(recentItems.payments as DashboardRecentPayment[] | undefined)?.length > 0 ? (
+            {(recentItems.payments ?? []).length > 0 ? (
               <ul className="space-y-1 text-sm">
-                {(recentItems.payments as DashboardRecentPayment[]).slice(0, 5).map((payment) => (
+                {(recentItems.payments ?? []).slice(0, 5).map((payment) => (
                   <li key={payment.id} className="flex justify-between text-sm">
                     <span className="text-muted-foreground">{payment.receipt_number ?? payment.id.slice(0, 8)}</span>
                     <span className="font-medium">{formatCurrency(payment.amount ?? 0)}</span>
@@ -232,9 +229,9 @@ export default function LegacyAdminDashboard() {
           </div>
           <div className="flex flex-col gap-2">
             <h3 className="text-sm font-semibold">Upcoming Sessions</h3>
-            {(recentItems.upcoming_sessions as DashboardRecentSession[] | undefined)?.length > 0 ? (
+            {(recentItems.upcoming_sessions ?? []).length > 0 ? (
               <ul className="space-y-1 text-sm">
-                {(recentItems.upcoming_sessions as DashboardRecentSession[]).slice(0, 5).map((session) => (
+                {(recentItems.upcoming_sessions ?? []).slice(0, 5).map((session) => (
                   <li key={session.id} className="flex justify-between text-sm">
                     <span className="text-muted-foreground">{session.group?.name ?? session.title ?? "—"}</span>
                     <span className="font-medium">{session.date ?? "—"}</span>
@@ -269,7 +266,7 @@ function SectionCardError({ title, onRetry, message }: { title: string; onRetry:
       <h3 className="text-sm font-medium">{title}</h3>
       <p className="text-xs text-muted-foreground">{message}</p>
       <button onClick={onRetry} className="rounded-md border border-input bg-secondary px-4 py-2 text-sm font-medium hover:bg-secondary/80">
-        {t("retry")}
+        Retry
       </button>
     </section>
   );

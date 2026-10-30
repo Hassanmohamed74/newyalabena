@@ -1,4 +1,4 @@
-import { IsDateString, IsOptional, IsEnum, IsUUID } from 'class-validator';
+﻿import { IsDateString, IsOptional, IsEnum, IsUUID } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { GroupMode } from '../../common/enums/group-mode.enum';
 import { GroupStatus } from '../../common/enums/group-status.enum';
@@ -25,6 +25,10 @@ export class DashboardQueryDto {
   @IsOptional()
   @Transform(({ value }) => value === 'true' || value === true)
   include_previous?: boolean;
+
+  @IsOptional()
+  @IsEnum(['month', 'week', 'quarter', 'year'])
+  period?: string;
 }
 
 export interface KpiResult {

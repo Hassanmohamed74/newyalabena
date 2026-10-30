@@ -1,6 +1,4 @@
-import React from "react";
-import { TrendBadge } from "./TrendBadge";
-import { toSafeArray } from "@/lib/utils";
+import { cn, toSafeArray } from "@/lib/utils";
 
 export interface TimeSeriesPoint {
   date: string;
@@ -16,16 +14,10 @@ interface AreaChartCardProps {
   className?: string;
 }
 
-function toFloat(value: unknown): number {
-  const n = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(n) ? n : 0;
-}
-
 export function AreaChartCard({
   title,
   points,
   value,
-  previousValue,
   unit = "",
   className,
 }: AreaChartCardProps) {
@@ -37,18 +29,18 @@ export function AreaChartCard({
   const chartW = width - pad * 2;
   const chartH = height - pad * 2;
 
-  const points = data
+  const chartPoints = data
     .map((d, i) => ({
       x: pad + (data.length > 1 ? ((i / (data.length - 1)) * chartW) : chartW / 2),
       y: chartH - (d.value / max) * chartH,
     }))
     .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
 
-  const linePath = points.length > 1
-    ? points.map((p, i) => (i === 0 ? `M${p.x.toFixed(1)} ${p.y.toFixed(1)}` : `L${p.x.toFixed(1)} ${p.y.toFixed(1)}`)).join(" ")
+  const linePath = chartPoints.length > 1
+    ? chartPoints.map((p, i) => (i === 0 ? `M${p.x.toFixed(1)} ${p.y.toFixed(1)}` : `L${p.x.toFixed(1)} ${p.y.toFixed(1)}`)).join(" ")
     : "";
 
-  const areaPath = linePath + ` L${points[points.length - 1]?.x.toFixed(1) ?? 0} ${chartH} L${points[0]?.x.toFixed(1) ?? 0} ${chartH} Z`;
+  const areaPath = linePath + ` L${chartPoints[chartPoints.length - 1]?.x.toFixed(1) ?? 0} ${chartH} L${chartPoints[0]?.x.toFixed(1) ?? 0} ${chartH} Z`;
 
   const labels = data.map((d) => {
     const date = new Date(d.date);
@@ -84,7 +76,7 @@ export function AreaChartCard({
             </defs>
             <path d={areaPath} fill="url(#areaGrad)" />
             {linePath && <path d={linePath} fill="none" stroke="rgb(59 130 246 / 0.85)" strokeWidth="2" vectorEffect="non-scaling-stroke" />}
-            {points.map((p, i) => (
+            {chartPoints.map((p, i) => (
               <circle key={i} cx={p.x} cy={p.y} r="3" fill="rgb(59 130 246 / 0.95)" stroke="white" strokeWidth="1.5" />
             ))}
           </svg>

@@ -11,6 +11,7 @@ import { UserRole } from '../../shared/entities/user-role.entity';
 import { Role } from '../../shared/entities/role.entity';
 import { Permission } from '../../shared/entities/permission.entity';
 import { ResetToken } from '../../shared/entities/reset-token.entity';
+import { EmailModule } from '../email/email.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { ResetToken } from '../../shared/entities/reset-token.entity';
       inject: [ConfigService],
     }),
     TypeOrmModule.forFeature([User, UserRole, Role, Permission, ResetToken]),
+    EmailModule,
   ],
   providers: [AuthService, JwtStrategy],
   controllers: [AuthController],

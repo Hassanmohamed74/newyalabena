@@ -1,6 +1,4 @@
-import React from "react";
-import { TrendBadge } from "./TrendBadge";
-import { toSafeArray } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 
 export interface BarDataPoint {
   label: string;
@@ -24,7 +22,6 @@ function toFloat(value: unknown): number {
 
 export function BarChartCard({ title, series, value, unit = "", showPrevious = true, className }: BarChartCardProps) {
   const max = Math.max(1, ...series.map((s) => Math.max(toFloat(s.value), toFloat(s.previous) ?? 0)));
-  const chartH = 200;
 
   return (
     <div className={cn("rounded-xl border border-border bg-card p-5 shadow-sm", className)}>
@@ -41,7 +38,7 @@ export function BarChartCard({ title, series, value, unit = "", showPrevious = t
         {series.map((s) => {
           const prev = s.previous != null ? toFloat(s.previous) : undefined;
           const h = Math.max(2, (toFloat(s.value) / max) * 100);
-          const hPrev = prev > 0 ? (prev / max) * 100 : 0;
+          const hPrev = (prev ?? 0) > 0 ? ((prev ?? 0) / max) * 100 : 0;
           const isUp = prev != null && prev > 0 && toFloat(s.value) > prev;
           const isDown = prev != null && prev > 0 && toFloat(s.value) < prev;
           const hue = isUp ? 142 : isDown ? 0 : 210;

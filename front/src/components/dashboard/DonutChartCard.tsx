@@ -1,6 +1,4 @@
-import React from "react";
-import { TrendBadge } from "./TrendBadge";
-import { toSafeArray } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 
 export interface DonutSegment {
   label: string;

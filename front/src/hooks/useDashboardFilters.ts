@@ -18,7 +18,7 @@ export interface DashboardFilters {
 }
 
 export function useDashboardFilters() {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
 
   const period = (searchParams.get("period") as DashboardPeriod) ?? "30d";

@@ -53,4 +53,20 @@ export const attendanceApi = {
     const { data } = await apiClient.get(`/attendances/alerts/absences`, { params: { threshold, group_id } });
     return data;
   },
+
+  history: async (params: {
+    group_id?: string; session_id?: string; student_id?: string;
+    from?: string; to?: string;
+  }): Promise<{ total: number; records: any[] }> => {
+    const { data } = await apiClient.get(`/attendances/history`, { params });
+    return data;
+  },
+
+  exportHistory: async (params: {
+    group_id?: string; session_id?: string; student_id?: string;
+    from?: string; to?: string;
+  }): Promise<Blob> => {
+    const { data } = await apiClient.get(`/attendances/history/export`, { params, responseType: "blob" });
+    return data as Blob;
+  },
 };

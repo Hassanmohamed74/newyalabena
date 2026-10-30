@@ -1,8 +1,11 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { attendanceApi, type AttendanceStatus, type MarkOneDto } from "@/api/attendance";
+import { attendanceApi, type AttendanceStatus } from "@/api/attendance";
+import { downloadBlob } from "@/api/finance";
 import { groupsApi } from "@/api/groups";
+import { sessionsApi } from "@/api/sessions";
+import { studentsApi } from "@/api/students";
 import { SessionPicker } from "@/components/attendance/SessionPicker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,7 +14,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { QrCode, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { DataTable } from "@/components/common/DataTable";
+import { QrCode, AlertTriangle, CheckCircle2, Download, Filter, Clock } from "lucide-react";
 
 export const ATT_STATUSES: AttendanceStatus[] = ["present", "absent", "late", "excused"];
 
@@ -32,10 +36,19 @@ export default function AttendancePage() {
 
   const [sessionId, setSessionId] = useState("");
   const [groupFilter, setGroupFilter] = useState("");
-  const [draft, setDraft] = useState<Record<string, MarkOneDto>>({});
+  const [draft, setDraft] = useState<Record<string, { student_id: string; status: AttendanceStatus; notes?: string; minutes_late?: number }>>({});
   const [checkInForm, setCheckInForm] = useState({ session_id: "", code: "" });
 
+  // History tab state
+  const [histGroup, setHistGroup] = useState("");
+  const [histSession, setHistSession] = useState("");
+  const [histStudent, setHistStudent] = useState("");
+  const [histFrom, setHistFrom] = useState("");
+  const [histTo, setHistTo] = useState("");
+
   const { data: groups } = useQuery({ queryKey: ["groups"], queryFn: () => groupsApi.findAll() });
+  const { data: allStudents } = useQuery({ queryKey: ["all-students"], queryFn: () => studentsApi.findAll() });
+  const { data: allSessions } = useQuery({ queryKey: ["all-sessions"], queryFn: () => sessionsApi.findAll() });
 
   const { data: roster, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["roster", sessionId],
@@ -52,6 +65,19 @@ export default function AttendancePage() {
   const { data: alerts } = useQuery({
     queryKey: ["absence-alerts"],
     queryFn: () => attendanceApi.absenceAlerts(3),
+  });
+
+  // History query
+  const { data: history, isLoading: histLoading, refetch: refetchHistory } = useQuery({
+    queryKey: ["attendance-history", histGroup, histSession, histStudent, histFrom, histTo],
+    queryFn: () => attendanceApi.history({
+      group_id: histGroup || undefined,
+      session_id: histSession || undefined,
+      student_id: histStudent || undefined,
+      from: histFrom || undefined,
+      to: histTo || undefined,
+    }),
+    enabled: true,
   });
 
   const bulkMutation = useMutation({
@@ -71,6 +97,21 @@ export default function AttendancePage() {
       setCheckInForm({ session_id: "", code: "" });
       if (checkInForm.session_id === sessionId) queryClient.invalidateQueries({ queryKey: ["roster", sessionId] });
     },
+    onError: (e: any) => toast({ variant: "destructive", title: t("common.error"), description: e.message }),
+  });
+
+  const exportMutation = useMutation({
+    mutationFn: async () => {
+      const blob = await attendanceApi.exportHistory({
+        group_id: histGroup || undefined,
+        session_id: histSession || undefined,
+        student_id: histStudent || undefined,
+        from: histFrom || undefined,
+        to: histTo || undefined,
+      });
+      downloadBlob(blob, "attendance-history.xlsx");
+    },
+    onSuccess: () => toast({ title: t("common.success"), description: "History exported to Excel" }),
     onError: (e: any) => toast({ variant: "destructive", title: t("common.error"), description: e.message }),
   });
 
@@ -145,7 +186,7 @@ export default function AttendancePage() {
                         {ATT_STATUSES.map((s) => (
                           <Button key={s} size="sm" variant={cur === s ? "default" : "outline"}
                             onClick={() => {
-                              const dto: MarkOneDto = { student_id: st.id, status: s };
+                              const dto = { student_id: st.id, status: s };
                               setDraft((d) => ({ ...d, [st.id]: dto }));
                             }}>{s}</Button>
                         ))}
@@ -193,7 +234,84 @@ export default function AttendancePage() {
           </TabsContent>
         </Tabs>
       )}
+
+      {/* ============ HISTORY TAB ============ */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle className="text-base flex items-center gap-2"><Filter className="h-4 w-4" /> Attendance History</CardTitle>
+          <div className="flex items-center gap-2">
+            <Button size="sm" onClick={() => exportMutation.mutate()} disabled={exportMutation.isPending || (history?.records?.length ?? 0) === 0}>
+              <Download className="mr-2 h-4 w-4" /> {exportMutation.isPending ? "Exporting…" : "Download Excel"}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => refetchHistory()}><Clock className="mr-2 h-4 w-4" /> Refresh</Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
+            <div className="space-y-2">
+              <Label>Group</Label>
+              <select value={histGroup} onChange={(e) => { setHistGroup(e.target.value); setHistSession(""); }}
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+                <option value="">{t("common.all")}</option>
+                {(groups ?? []).map((g: any) => <option key={g.id} value={g.id}>{g.name}</option>)}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <Label>Session</Label>
+              <select value={histSession} onChange={(e) => setHistSession(e.target.value)}
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+                <option value="">{t("common.all")}</option>
+                {(allSessions ?? []).map((s: any) => <option key={s.id} value={s.id}>{s.topic || s.id.slice(0, 8)}</option>)}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <Label>Student</Label>
+              <select value={histStudent} onChange={(e) => setHistStudent(e.target.value)}
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+                <option value="">{t("common.all")}</option>
+                {(allStudents ?? []).map((s: any) => <option key={s.id} value={s.id}>{displayName(s)}</option>)}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <Label>From</Label>
+              <Input type="date" value={histFrom} onChange={(e) => setHistFrom(e.target.value)} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" />
+            </div>
+            <div className="space-y-2">
+              <Label>To</Label>
+              <Input type="date" value={histTo} onChange={(e) => setHistTo(e.target.value)} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" />
+            </div>
+            <div className="flex items-end">
+              <Button size="sm" variant="outline" onClick={() => { setHistGroup(""); setHistSession(""); setHistStudent(""); setHistFrom(""); setHistTo(""); }}>{t("common.clear")}</Button>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <DataTable
+              columns={[
+                { key: 'student_name', header: 'Student' },
+                { key: 'student_number', header: 'Student No.' },
+                { key: 'group_name', header: 'Group' },
+                { key: 'session_date', header: 'Session Date' },
+                { key: 'session_topic', header: 'Topic' },
+                { key: 'status', header: 'Status', render: (r: any) => <Badge className={statusColor(r.status)}>{r.status}</Badge> },
+                { key: 'minutes_late', header: 'Min. Late', render: (r: any) => r.minutes_late > 0 ? r.minutes_late : '-' },
+                { key: 'check_in_method', header: 'Check-in Method' },
+                { key: 'recorded_at', header: 'Recorded At' },
+              ]}
+              data={history?.records ?? []}
+              isLoading={histLoading}
+              isError={false}
+              keyExtractor={(r: any) => `${r.student_id}-${r.session_id}`}
+              pageSize={20}
+            />
+          </div>
+          {(history?.records?.length ?? 0) > 0 && (
+            <div className="text-xs text-muted-foreground">
+              {history?.total ?? 0} record(s) found
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
-

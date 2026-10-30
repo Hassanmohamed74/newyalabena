@@ -7,11 +7,30 @@ import { Attendance } from '../../shared/entities/attendance.entity';
 import { Session } from '../../shared/entities/session.entity';
 import { Student } from '../../shared/entities/student.entity';
 import { GroupStudent } from '../../shared/entities/group-student.entity';
+import { Group } from '../../shared/entities/group.entity';
 import { AttendanceStatus } from '../../common/enums/attendance-status.enum';
 import { CheckInMethod } from '../../common/enums/check-in-method.enum';
 import { MarkAttendanceDto } from './dto/mark-attendance.dto';
 import { CheckInDto } from './dto/check-in.dto';
 import { ChatService } from '../chat/chat.service';
+import { Workbook } from 'exceljs';
+
+export interface AttendanceHistoryRow {
+  student_id: string;
+  student_number: string;
+  student_name: string;
+  group_id: string;
+  group_name: string;
+  session_id: string;
+  session_date: string;
+  session_topic: string;
+  status: string;
+  minutes_late: number;
+  check_in_method: string;
+  check_in_time: Date | null;
+  recorded_by: string | null;
+  recorded_at: Date;
+}
 
 @Injectable()
 export class AttendancesService {
@@ -343,5 +362,100 @@ export class AttendancesService {
 
     const rows = await qb.getRawMany();
     return { threshold, flagged: rows.map((r) => ({ student_id: r.student_id, absences: Number(r.absences) })) };
+  }
+
+  // ---------- history & export ----------
+
+  async getHistory(params: {
+    group_id?: string; session_id?: string; student_id?: string;
+    from?: Date; to?: Date;
+  }) {
+    const qb = this.repo.createQueryBuilder('attendance')
+      .innerJoin('attendance.student', 'student')
+      .innerJoin('student.user', 'user')
+      .innerJoin('attendance.session', 'session')
+      .leftJoin('session.group', 'group')
+      .select([
+        'student.id', 'student_id',
+        'student.student_number', 'student_number',
+        'user.first_name', 'student_first_name',
+        'user.last_name', 'student_last_name',
+        'group.id', 'group_id',
+        'group.name', 'group_name',
+        'session.id', 'session_id',
+        'session.date', 'session_date',
+        'session.topic', 'session_topic',
+        'attendance.status', 'status',
+        'attendance.minutes_late', 'minutes_late',
+        'attendance.check_in_method', 'check_in_method',
+        'attendance.check_in_time', 'check_in_time',
+        'attendance.created_by', 'recorded_by',
+        'attendance.created_at', 'recorded_at',
+      ]);
+
+    if (params.group_id) qb.andWhere('group.id = :group_id', { group_id: params.group_id });
+    if (params.session_id) qb.andWhere('session.id = :session_id', { session_id: params.session_id });
+    if (params.student_id) qb.andWhere('student.id = :student_id', { student_id: params.student_id });
+    if (params.from) qb.andWhere('session.date >= :from', { from: this.dateStr(params.from) });
+    if (params.to) qb.andWhere('session.date <= :to', { to: this.dateStr(params.to) });
+
+    qb.orderBy('session.date', 'DESC').addOrderBy('student.student_number', 'ASC');
+
+    const rows = await qb.getRawMany();
+    return {
+      total: rows.length,
+      records: rows.map((r: any) => ({
+        student_id: r.student_id,
+        student_number: r.student_number,
+        student_name: `${r.student_first_name ?? ''} ${r.student_last_name ?? ''}`.trim() || r.student_number,
+        group_id: r.group_id,
+        group_name: r.group_name,
+        session_id: r.session_id,
+        session_date: r.session_date,
+        session_topic: r.session_topic,
+        status: r.status,
+        minutes_late: Number(r.minutes_late ?? 0),
+        check_in_method: r.check_in_method,
+        check_in_time: r.check_in_time,
+        recorded_by: r.recorded_by,
+        recorded_at: r.recorded_at,
+      })),
+    };
+  }
+
+  async exportHistory(params: {
+    group_id?: string; session_id?: string; student_id?: string;
+    from?: Date; to?: Date;
+  }): Promise<Buffer> {
+    const { records } = await this.getHistory(params);
+
+    const workbook = new Workbook();
+    const worksheet = workbook.addWorksheet('Attendance History');
+
+    worksheet.columns = [
+      { header: 'Student ID', key: 'student_id', width: 30 },
+      { header: 'Student Number', key: 'student_number', width: 20 },
+      { header: 'Student Name', key: 'student_name', width: 30 },
+      { header: 'Group ID', key: 'group_id', width: 30 },
+      { header: 'Group Name', key: 'group_name', width: 30 },
+      { header: 'Session ID', key: 'session_id', width: 30 },
+      { header: 'Session Date', key: 'session_date', width: 20 },
+      { header: 'Session Topic', key: 'session_topic', width: 40 },
+      { header: 'Status', key: 'status', width: 15 },
+      { header: 'Minutes Late', key: 'minutes_late', width: 15 },
+      { header: 'Check-in Method', key: 'check_in_method', width: 20 },
+      { header: 'Check-in Time', key: 'check_in_time', width: 25 },
+      { header: 'Recorded By', key: 'recorded_by', width: 30 },
+      { header: 'Recorded At', key: 'recorded_at', width: 25 },
+    ];
+
+    worksheet.addRows(records.map((r) => ({
+      ...r,
+      check_in_time: r.check_in_time ? new Date(r.check_in_time).toISOString() : '',
+      recorded_at: r.recorded_at ? new Date(r.recorded_at).toISOString() : '',
+    })));
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    return Buffer.from(buffer);
   }
 }

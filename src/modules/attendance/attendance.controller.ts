@@ -1,10 +1,11 @@
-import { Controller, Get, Post, Body, Param, Query } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Query, Res } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { AttendancesService } from './attendance.service';
 import { MarkAttendanceDto, BulkMarkAttendanceDto } from './dto/mark-attendance.dto';
 import { CheckInDto } from './dto/check-in.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { Response } from 'express';
 
 @ApiTags('Attendances')
 @ApiBearerAuth('JWT')
@@ -58,7 +59,7 @@ export class AttendancesController {
 
   @Get('sessions/:sessionId/check-in-code')
   @Roles('super_admin', 'teacher')
-  @ApiOperation({ summary: 'Get today\'s signed check-in code (teacher displays QR)' })
+  @ApiOperation({ summary: "Get today's signed check-in code (teacher displays QR)" })
   async getCheckInCode(@Param('sessionId') sessionId: string) {
     return { code: this.service.generateCheckInCode(sessionId) };
   }
@@ -96,5 +97,58 @@ export class AttendancesController {
   @ApiQuery({ name: 'group_id', required: false, type: String })
   async absenceAlerts(@Query('threshold') threshold?: string, @Query('group_id') groupId?: string) {
     return this.service.absenceAlerts(threshold ? Number(threshold) : 3, groupId || undefined);
+  }
+
+  @Get('history')
+  @Roles('super_admin', 'teacher', 'academic', 'branch_manager')
+  @ApiOperation({ summary: 'Attendance history with filtering by group/session/student/date' })
+  @ApiQuery({ name: 'group_id', required: false, type: String })
+  @ApiQuery({ name: 'session_id', required: false, type: String })
+  @ApiQuery({ name: 'student_id', required: false, type: String })
+  @ApiQuery({ name: 'from', required: false, type: String })
+  @ApiQuery({ name: 'to', required: false, type: String })
+  async getHistory(
+    @Query('group_id') groupId?: string,
+    @Query('session_id') sessionId?: string,
+    @Query('student_id') studentId?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.service.getHistory({
+      group_id: groupId,
+      session_id: sessionId,
+      student_id: studentId,
+      from: from ? new Date(from) : undefined,
+      to: to ? new Date(to) : undefined,
+    });
+  }
+
+  @Get('history/export')
+  @Roles('super_admin', 'teacher', 'academic', 'branch_manager')
+  @ApiOperation({ summary: 'Export attendance history to Excel' })
+  @ApiQuery({ name: 'group_id', required: false, type: String })
+  @ApiQuery({ name: 'session_id', required: false, type: String })
+  @ApiQuery({ name: 'student_id', required: false, type: String })
+  @ApiQuery({ name: 'from', required: false, type: String })
+  @ApiQuery({ name: 'to', required: false, type: String })
+  async exportHistory(
+    @Query('group_id') groupId?: string,
+    @Query('session_id') sessionId?: string,
+    @Query('student_id') studentId?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Res() res?: Response,
+  ) {
+    const buffer = await this.service.exportHistory({
+      group_id: groupId,
+      session_id: sessionId,
+      student_id: studentId,
+      from: from ? new Date(from) : undefined,
+      to: to ? new Date(to) : undefined,
+    });
+
+    res!.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res!.setHeader('Content-Disposition', 'attachment; filename="attendance-history.xlsx"');
+    res!.send(buffer);
   }
 }
