@@ -1,7 +1,7 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, ManyToOne, JoinColumn, OneToMany } from 'typeorm';
 import { User } from './user.entity';
 import { Classroom } from './classroom.entity';
-import { UserStatus } from '../../common/enums/user-status.enum';
+import { BranchStatus } from '../../common/enums/branch-status.enum';
 
 @Entity('branches')
 export class Branch {
@@ -33,8 +33,8 @@ export class Branch {
   @Column({ type: 'varchar', length: 500, nullable: true })
   logo_url: string;
 
-  @Column({ type: 'enum', enum: UserStatus, default: UserStatus.ACTIVE })
-  status: UserStatus;
+  @Column({ type: 'enum', enum: BranchStatus, default: BranchStatus.ACTIVE })
+  status: BranchStatus;
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;

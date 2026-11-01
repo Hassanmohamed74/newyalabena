@@ -1,6 +1,6 @@
 import { IsString, IsOptional, IsUUID, IsEnum, IsEmail } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { UserStatus } from '../../../common/enums/user-status.enum';
+import { BranchStatus } from '../../../common/enums/branch-status.enum';
 
 /** Payload accepted by PUT /branches/:id — mirrors the frontend edit form. */
 export class UpdateBranchDto {
@@ -29,8 +29,8 @@ export class UpdateBranchDto {
   @IsUUID()
   manager_id?: string;
 
-  @ApiPropertyOptional({ enum: UserStatus })
+  @ApiPropertyOptional({ enum: BranchStatus })
   @IsOptional()
-  @IsEnum(UserStatus)
-  status?: UserStatus;
+  @IsEnum(BranchStatus)
+  status?: BranchStatus;
 }

@@ -1,6 +1,6 @@
 import { IsString, IsOptional, IsUUID, IsEnum, IsEmail, IsInt, Min } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { UserStatus } from '../../../common/enums/user-status.enum';
+import { BranchStatus } from '../../../common/enums/branch-status.enum';
 
 export class CreateBranchDto {
   @ApiProperty({ example: 'Cairo Main Branch' })
@@ -36,8 +36,8 @@ export class CreateBranchDto {
   @IsString()
   logo_url?: string;
 
-  @ApiPropertyOptional({ enum: UserStatus, default: 'active' })
+  @ApiPropertyOptional({ enum: BranchStatus, default: 'active' })
   @IsOptional()
-  @IsEnum(UserStatus)
-  status?: UserStatus;
+  @IsEnum(BranchStatus)
+  status?: BranchStatus;
 }

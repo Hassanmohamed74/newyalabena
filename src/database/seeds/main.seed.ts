@@ -1,16 +1,9 @@
 import { DataSource } from 'typeorm'
 import { dataSourceOptions } from '../data-source';
-import { seedRoles } from './role.seed';
-import { seedPermissions } from './permission.seed';
-import { seedRolePermissions } from './role-permission.seed';
-import { seedSettings } from './setting.seed';
-import { seedBranch } from './branch.seed';
+import { seedComprehensive } from './comprehensive.seed';
 import { PostgresConnectionOptions } from 'typeorm/driver/postgres/PostgresConnectionOptions';
 
-import { seedSuperUser } from './superuser.seed'; // تأكد من المسار الصحيح لو الملف باسم تاني
-
 async function runSeeds() {
-  // عمل Casting صريح لنوع بوستجرس عشان الـ TypeScript يقرأ الخصائص صح
   const pgOptions = dataSourceOptions as PostgresConnectionOptions;
 
   console.log('--- DB Connection Check ---');
@@ -22,14 +15,10 @@ async function runSeeds() {
 
   const dataSource = new DataSource(dataSourceOptions);
   await dataSource.initialize();
-  console.log('Database connected. Running seeds...');
+  console.log('Database connected. Running comprehensive seed...');
 
-  await seedPermissions(dataSource);
-  await seedRoles(dataSource);
-  await seedRolePermissions(dataSource);
-  await seedSettings(dataSource);
-  await seedBranch(dataSource);
-  await seedSuperUser(dataSource); // <-- أضفناها هنا
+  await seedComprehensive(dataSource);
+
   console.log('All seeds completed successfully.');
   await dataSource.destroy();
 }

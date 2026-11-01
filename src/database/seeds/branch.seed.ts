@@ -1,48 +1,133 @@
 import { DataSource } from 'typeorm';
+import * as bcrypt from 'bcrypt';
+import { Branch } from '../../shared/entities/branch.entity';
+import { BranchStatus } from '../../common/enums/branch-status.enum';
+import { User } from '../../shared/entities/user.entity';
+import { UserStatus } from '../../common/enums/user-status.enum';
+import { Role } from '../../shared/entities/role.entity';
+import { UserRole } from '../../shared/entities/user-role.entity';
 
 export async function seedBranch(dataSource: DataSource) {
-  const defaultId = '3c2ecfa2-aced-460f-9ee4-fa1af3d7161b';
-  const teacherId = '19197f5b-e457-43a7-b4a5-bb52cf8acf34';
+  const branchRepo = dataSource.getRepository(Branch);
+  const userRepo = dataSource.getRepository(User);
+  const roleRepo = dataSource.getRepository(Role);
+  const userRoleRepo = dataSource.getRepository(UserRole);
 
-  // 1. إدخال الفرع (Branch)
-  await dataSource.query(
-    `INSERT INTO branches (id, name, address, phone, status, created_at, updated_at) 
-     VALUES ($1, $2, $3, $4, $5, NOW(), NOW()) 
-     ON CONFLICT (id) DO NOTHING`,
-    [defaultId, 'Main Branch', 'Default Address', '+201000000000', 'active']
-  );
+  const { v4: uuidv4 } = require('uuid');
 
-  // 2. إدخال كورس افتراضي (Course) مع تغيير level إلى 'A1' (أو 'Beginner' لو مشتفتش)
-  await dataSource.query(
-    `INSERT INTO courses (id, name, code, level, duration_hours, default_price, status, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, 'active', NOW(), NOW())
-     ON CONFLICT (id) DO NOTHING`,
-    [defaultId, 'Default Course', 'DEF-01', 'A1', 10, 1000.00]
-  );
+  const cairoId = uuidv4();
+  const alexandriaId = uuidv4();
+  const onlineId = uuidv4();
 
-  // 3. إدخال المدرس الافتراضي (User)
-  await dataSource.query(
-    `INSERT INTO users (id, email, password_hash, first_name, last_name, branch_id, language, status, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
-     ON CONFLICT (id) DO NOTHING`,
-    [teacherId, 'teacher@speakup.com', '$2b$10$EpVqVv0g9h372k9z...', 'Teacher', 'User', defaultId, 'ar', 'active']
-  );
+  // 1. Seed branches with BranchStatus enum
+  const branches = [
+    {
+      id: cairoId,
+      name: 'Cairo Main Branch',
+      address: '45 Talaat Harb Street, Downtown, Cairo, Egypt',
+      phone: '+20225789012',
+      email: 'cairo@speakup.com',
+      status: BranchStatus.ACTIVE,
+      classroom_count: 5,
+      logo_url: 'https://speakup.com/logos/cairo-main.png',
+    },
+    {
+      id: alexandriaId,
+      name: 'Alexandria Branch',
+      address: '123 Fouad Street, Alexandria, Egypt',
+      phone: '+2033882233',
+      email: 'alexandria@speakup.com',
+      status: BranchStatus.ACTIVE,
+      classroom_count: 3,
+      logo_url: 'https://speakup.com/logos/alexandria.png',
+    },
+    {
+      id: onlineId,
+      name: 'Online Campus',
+      address: 'Virtual - Online Learning Platform',
+      phone: '+20220000000',
+      email: 'online@speakup.com',
+      status: BranchStatus.ACTIVE,
+      classroom_count: 0,
+      logo_url: 'https://speakup.com/logos/online.png',
+    },
+  ];
 
-  // 4. ربط المدرس بدور "teacher" في جدول الصلاحيات (user_roles) لتجاوز دالة التحقق
-  await dataSource.query(
-    `INSERT INTO user_roles (user_id, role_id)
-     SELECT $1, id FROM roles WHERE slug = 'teacher'
-     ON CONFLICT DO NOTHING`,
-    [teacherId]
-  );
+  for (const branch of branches) {
+    const exists = await branchRepo.findOne({ where: { id: branch.id } });
+    if (!exists) {
+      await branchRepo.save(branchRepo.create(branch));
+      console.log(`Branch seeded: ${branch.name}`);
+    }
+  }
 
-  // 5. إدخال الـ Group بعد التأكد أن المدرس أصبح لديه صلاحية الـ teacher رسمياً
-  await dataSource.query(
-    `INSERT INTO groups (id, name, course_id, teacher_id, branch_id, capacity, mode, start_date, end_date, status, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW() + INTERVAL '30 days', $8, NOW(), NOW())
-     ON CONFLICT (id) DO NOTHING`,
-    [defaultId, 'Default Group', defaultId, teacherId, defaultId, 20, 'in_person', 'upcoming']
-  );
+  // 2. Seed branch manager users with proper bcrypt hashes
+  const passwordHash = await bcrypt.hash('password123', 10);
 
-  console.log('Default Branch, Course, Teacher, Teacher Role, and Group seeded successfully.');
+  const cairoManagerId = uuidv4();
+  const alexManagerId = uuidv4();
+
+  const managers = [
+    {
+      id: cairoManagerId,
+      email: 'manager.cairo@speakup.com',
+      password_hash: passwordHash,
+      first_name: 'Ahmed',
+      last_name: 'Hassan',
+      branch_id: cairoId,
+      language: 'ar',
+      status: UserStatus.ACTIVE,
+    },
+    {
+      id: alexManagerId,
+      email: 'manager.alex@speakup.com',
+      password_hash: passwordHash,
+      first_name: 'Samy',
+      last_name: 'Ibrahim',
+      branch_id: alexandriaId,
+      language: 'ar',
+      status: UserStatus.ACTIVE,
+    },
+  ];
+
+  for (const manager of managers) {
+    const exists = await userRepo.findOne({ where: { email: manager.email } });
+    if (!exists) {
+      await userRepo.save(userRepo.create(manager));
+      console.log(`Branch manager user seeded: ${manager.email}`);
+    }
+  }
+
+  // 3. Assign branch_manager role to managers
+  const branchManagerRole = await roleRepo.findOne({ where: { slug: 'branch_manager' } });
+  if (branchManagerRole) {
+    for (const manager of managers) {
+      const existingLink = await userRoleRepo.findOne({
+        where: { user_id: manager.id, role_id: branchManagerRole.id },
+      });
+      if (!existingLink) {
+        await userRoleRepo.save(
+          userRoleRepo.create({
+            user_id: manager.id,
+            role_id: branchManagerRole.id,
+          }),
+        );
+        console.log(`Role assigned: branch_manager -> ${manager.email}`);
+      }
+    }
+  }
+
+  // 4. Update branches with their manager_id
+  if (branchManagerRole) {
+    await dataSource.query(
+      `UPDATE branches SET manager_id = $1 WHERE id = $2`,
+      [cairoManagerId, cairoId],
+    );
+    await dataSource.query(
+      `UPDATE branches SET manager_id = $1 WHERE id = $2`,
+      [alexManagerId, alexandriaId],
+    );
+  }
+
+  console.log('Branch seeding completed successfully.');
 }
