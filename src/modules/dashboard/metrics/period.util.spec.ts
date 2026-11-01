@@ -6,10 +6,10 @@ describe('resolvePeriod', () => {
   it('resolves today as a day bucket', () => {
     const r = resolvePeriod('today', undefined, undefined, appConfig);
     expect(r.bucket).toBe('day');
-    const expectedStart = new Date();
-    expectedStart.setHours(0, 0, 0, 0);
-    const expectedEnd = new Date();
-    expectedEnd.setHours(23, 59, 59, 999);
+    // Use the same timezone logic as the resolver
+    const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo' }).format(new Date());
+    const expectedStart = new Date(todayStr + 'T00:00:00');
+    const expectedEnd = new Date(todayStr + 'T23:59:59.999');
     expect(r.from.getTime()).toBe(expectedStart.getTime());
     expect(r.to.getTime()).toBe(expectedEnd.getTime());
   });
@@ -17,6 +17,7 @@ describe('resolvePeriod', () => {
   it('resolves 7d and previousFor', () => {
     const r = resolvePeriod('7d', undefined, undefined, appConfig);
     expect(r.bucket).toBe('day');
+    // Previous period should be exactly 7 days before the current period start
     expect(r.previousFrom.getTime()).toBe(r.from.getTime() - 7 * 86_400_000);
   });
 

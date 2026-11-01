@@ -15,24 +15,6 @@ import { Enrollment } from '../../shared/entities/enrollment.entity';
 import { Employee } from '../../shared/entities/employee.entity';
 import { LeaveRequest } from '../../shared/entities/leave-request.entity';
 import { PayrollEntry } from '../../shared/entities/payroll-entry.entity';
-import { PayrollPeriod } from '../../shared/entities/payroll-period.entity';
-import { Activity } from '../../shared/entities/activity.entity';
-import { ActivityRegistration } from '../../shared/entities/activity-registration.entity';
-import { Certificate } from '../../shared/entities/certificate.entity';
-import { CertificateTemplate } from '../../shared/entities/certificate-template.entity';
-import { LmsModule } from '../../shared/entities/lms-module.entity';
-import { LmsLesson } from '../../shared/entities/lms-lesson.entity';
-import { Assignment } from '../../shared/entities/assignment.entity';
-import { Submission } from '../../shared/entities/submission.entity';
-import { Quiz } from '../../shared/entities/quiz.entity';
-import { QuizAttempt } from '../../shared/entities/quiz-attempt.entity';
-import { InventoryItem } from '../../shared/entities/inventory-item.entity';
-import { StockLevel } from '../../shared/entities/stock-level.entity';
-import { Refund } from '../../shared/entities/refund.entity';
-import { StockMove } from '../../shared/entities/stock-move.entity';
-import { FinancialTransaction } from '../../shared/entities/financial-transaction.entity';
-import { Installment } from '../../shared/entities/installment.entity';
-import { PromoCode } from '../../shared/entities/promo-code.entity';
 import { DashboardController } from './dashboard.controller';
 import { DashboardService } from './dashboard.service';
 import { AdminMetricService } from './metrics/admin-metric.service';
@@ -62,24 +44,6 @@ import { PeriodResolver } from './metrics/period.util';
       Employee,
       LeaveRequest,
       PayrollEntry,
-      PayrollPeriod,
-      Activity,
-      ActivityRegistration,
-      Certificate,
-      CertificateTemplate,
-      LmsModule,
-      LmsLesson,
-      Assignment,
-      Submission,
-      Quiz,
-      QuizAttempt,
-      InventoryItem,
-      StockLevel,
-      StockMove,
-      Refund,
-      FinancialTransaction,
-      Installment,
-      PromoCode,
     ]),
   ],
   controllers: [DashboardController],

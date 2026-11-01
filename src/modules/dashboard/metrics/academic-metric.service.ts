@@ -23,7 +23,6 @@ export class AcademicMetricService extends BaseMetricService {
   }
 
   async getMetrics(user: AuthUser, dto: DashboardQueryDto) {
-    const bf = this.branchFilter(user, dto.branch_id);
     const now = new Date();
     const today = this.startOfPeriod(now);
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -36,12 +35,12 @@ export class AcademicMetricService extends BaseMetricService {
       attendanceSummary,
       fillRate,
     ] = await Promise.all([
-      this.countGroups(bf),
-      this.countActiveGroups(bf),
-      this.countSessions(bf),
-      this.countSessionsToday(today, bf),
-      this.getAttendanceSummary(bf),
-      this.computeGroupFillRate(bf),
+      this.countGroups().catch(() => 0),
+      this.countActiveGroups().catch(() => 0),
+      this.countSessions().catch(() => 0),
+      this.countSessionsToday(today).catch(() => 0),
+      this.getAttendanceSummary().catch(() => ({ present: 0, absent: 0, late: 0 })),
+      this.computeGroupFillRate().catch(() => this.makeKpi(0, 0)),
     ]);
 
     const kpis: Record<string, KpiResult> = {
@@ -84,46 +83,37 @@ export class AcademicMetricService extends BaseMetricService {
     };
   }
 
-  private async countGroups(branchFilter?: string): Promise<number> {
+  private async countGroups(): Promise<number> {
     const qb = this.groupRepo.createQueryBuilder('g');
-    if (branchFilter) qb.where('g.branch_id = :b', { b: branchFilter });
     return qb.getCount();
   }
 
-  private async countActiveGroups(branchFilter?: string): Promise<number> {
+  private async countActiveGroups(): Promise<number> {
     const qb = this.groupRepo.createQueryBuilder('g')
       .where("g.status = :status", { status: 'active' });
-    if (branchFilter) qb.andWhere('g.branch_id = :b', { b: branchFilter });
     return qb.getCount();
   }
 
-  private async countSessions(branchFilter?: string): Promise<number> {
+  private async countSessions(): Promise<number> {
     const qb = this.sessionRepo.createQueryBuilder('s')
       .leftJoin('s.group', 'g');
-    if (branchFilter) qb.andWhere('g.branch_id = :b', { b: branchFilter });
     return qb.getCount();
   }
 
-  private async countSessionsToday(today: Date, branchFilter?: string): Promise<number> {
+  private async countSessionsToday(today: Date): Promise<number> {
     const qb = this.sessionRepo.createQueryBuilder('s')
       .leftJoin('s.group', 'g')
       .where('s.date = :d', { d: today })
       .andWhere('s.cancelled_at IS NULL');
-    if (branchFilter) qb.andWhere('g.branch_id = :b', { b: branchFilter });
     return qb.getCount();
   }
 
-  private async getAttendanceSummary(branchFilter?: string) {
+  private async getAttendanceSummary() {
     const qb = this.attendanceRepo
       .createQueryBuilder('a')
       .select("a.status", 'status')
       .addSelect('COUNT(a.id)', 'count')
       .groupBy('a.status');
-    if (branchFilter) {
-      qb.innerJoin('a.session', 's')
-        .innerJoin('s.group', 'g')
-        .andWhere('g.branch_id = :b', { b: branchFilter });
-    }
     const rows = await qb.getRawMany();
     const summary = { present: 0, absent: 0, late: 0 };
     for (const row of rows) {
@@ -135,20 +125,16 @@ export class AcademicMetricService extends BaseMetricService {
     return summary;
   }
 
-  private async computeGroupFillRate(branchFilter?: string): Promise<KpiResult> {
+  private async computeGroupFillRate(): Promise<KpiResult> {
     const qb = this.groupRepo
       .createQueryBuilder('g')
       .select('COALESCE(SUM(g.capacity), 0)', 'capacity');
-    if (branchFilter) qb.where('g.branch_id = :b', { b: branchFilter });
     const capacityRow = await qb.getRawOne();
     const capacity = Number(capacityRow?.capacity ?? 0);
 
     const enrolledQb = this.gsRepo.createQueryBuilder('gs')
       .select('COUNT(*)', 'enrolled')
       .where("gs.status = :status", { status: 'active' });
-    if (branchFilter) {
-      enrolledQb.innerJoin('gs.group', 'g').andWhere('g.branch_id = :b', { b: branchFilter });
-    }
     const enrolledRow = await enrolledQb.getRawOne();
     const enrolled = Number(enrolledRow?.enrolled ?? 0);
 

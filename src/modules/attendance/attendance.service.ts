@@ -1,4 +1,10 @@
-import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ForbiddenException,
+  Logger,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { createHmac, timingSafeEqual } from 'crypto';
@@ -7,30 +13,11 @@ import { Attendance } from '../../shared/entities/attendance.entity';
 import { Session } from '../../shared/entities/session.entity';
 import { Student } from '../../shared/entities/student.entity';
 import { GroupStudent } from '../../shared/entities/group-student.entity';
-import { Group } from '../../shared/entities/group.entity';
 import { AttendanceStatus } from '../../common/enums/attendance-status.enum';
 import { CheckInMethod } from '../../common/enums/check-in-method.enum';
 import { MarkAttendanceDto } from './dto/mark-attendance.dto';
 import { CheckInDto } from './dto/check-in.dto';
 import { ChatService } from '../chat/chat.service';
-import { Workbook } from 'exceljs';
-
-export interface AttendanceHistoryRow {
-  student_id: string;
-  student_number: string;
-  student_name: string;
-  group_id: string;
-  group_name: string;
-  session_id: string;
-  session_date: string;
-  session_topic: string;
-  status: string;
-  minutes_late: number;
-  check_in_method: string;
-  check_in_time: Date | null;
-  recorded_by: string | null;
-  recorded_at: Date;
-}
 
 @Injectable()
 export class AttendancesService {
@@ -127,18 +114,32 @@ export class AttendancesService {
   }
 
   private async getSessionOrFail(sessionId: string): Promise<Session> {
-    const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
+    // Load the group so caller can enforce teacher ownership (group.teacher_id).
+    const session = await this.sessionRepo.findOne({
+      where: { id: sessionId },
+      relations: ['group'],
+    });
     if (!session) {
       throw new NotFoundException(`Session with ID ${sessionId} not found`);
     }
     return session;
   }
 
+  /** Teachers may only access attendance of sessions belonging to groups they teach. */
+  private assertTeacherOwnsSession(session: Session, teacherId: string): void {
+    if (!session.group || session.group.teacher_id !== teacherId) {
+      throw new ForbiddenException(
+        'You can only view or mark attendance for sessions of groups you are assigned to teach.',
+      );
+    }
+  }
+
   // ---------- roster & marking ----------
 
   /** Full roster for a session: every active group student + any recorded attendance. */
-  async getRoster(sessionId: string) {
+  async getRoster(sessionId: string, teacherId?: string) {
     const session = await this.getSessionOrFail(sessionId);
+    if (teacherId) this.assertTeacherOwnsSession(session, teacherId);
     const groupStudents = await this.groupStudentRepo.find({
       where: { group_id: session.group_id, status: 'active' },
       relations: ['student', 'student.user'],
@@ -292,10 +293,71 @@ export class AttendancesService {
     return this.repo.save(attendance);
   }
 
+  // ---------- automated attendance via Zoom join ----------
+
+  /**
+   * Auto-mark a student as PRESENT when they join a session via Zoom.
+   * Idempotent: re-joining updates the existing record's method/time but keeps
+   * the status as present (never downgrades an already-recorded mark).
+   */
+  async autoMarkAttendance(sessionId: string, studentId: string): Promise<Attendance> {
+    const session = await this.getSessionOrFail(sessionId);
+
+    if (session.cancelled_at) {
+      throw new BadRequestException('This session has been cancelled.');
+    }
+    if (session.attendance_locked) {
+      throw new BadRequestException('Attendance for this session is locked.');
+    }
+
+    const student = await this.studentRepo.findOne({ where: { id: studentId } });
+    if (!student) {
+      throw new NotFoundException('Student not found.');
+    }
+
+    const enrolled = await this.groupStudentRepo.findOne({
+      where: { group_id: session.group_id, student_id: student.id, status: 'active' },
+    });
+    if (!enrolled) {
+      throw new BadRequestException('This student is not actively enrolled in the session group.');
+    }
+
+    const now = new Date();
+    const minutesLate = this.minutesBetween(session.start_time, now, session.date);
+
+    let attendance = await this.repo.findOne({
+      where: { session_id: sessionId, student_id: studentId },
+    });
+
+    if (attendance) {
+      // Only refresh check-in metadata; preserve an existing explicit status
+      // unless it was never recorded.
+      attendance.check_in_method = CheckInMethod.AUTO;
+      attendance.check_in_time = now;
+      attendance.minutes_late = minutesLate;
+      if (!attendance.status) attendance.status = AttendanceStatus.PRESENT;
+    } else {
+      attendance = this.repo.create({
+        session_id: session.id,
+        student_id: student.id,
+        status: AttendanceStatus.PRESENT,
+        check_in_method: CheckInMethod.AUTO,
+        check_in_time: now,
+        minutes_late: minutesLate,
+        created_by: studentId,
+      });
+    }
+
+    const saved = await this.repo.save(attendance);
+    await this.syncSectionChatSafely(session.group_id);
+    return saved;
+  }
+
   // ---------- queries & reports ----------
 
-  async getForSession(sessionId: string) {
-    await this.getSessionOrFail(sessionId);
+  async getForSession(sessionId: string, teacherId?: string) {
+    const session = await this.getSessionOrFail(sessionId);
+    if (teacherId) this.assertTeacherOwnsSession(session, teacherId);
     return this.repo.find({
       where: { session_id: sessionId },
       relations: ['student', 'student.user'],
@@ -364,98 +426,93 @@ export class AttendancesService {
     return { threshold, flagged: rows.map((r) => ({ student_id: r.student_id, absences: Number(r.absences) })) };
   }
 
-  // ---------- history & export ----------
+  // ---------- filtered list + CSV export (role-scoped) ----------
 
-  async getHistory(params: {
-    group_id?: string; session_id?: string; student_id?: string;
-    from?: Date; to?: Date;
-  }) {
-    const qb = this.repo.createQueryBuilder('attendance')
-      .innerJoin('attendance.student', 'student')
-      .innerJoin('student.user', 'user')
-      .innerJoin('attendance.session', 'session')
-      .leftJoin('session.group', 'group')
-      .select([
-        'student.id', 'student_id',
-        'student.student_number', 'student_number',
-        'user.first_name', 'student_first_name',
-        'user.last_name', 'student_last_name',
-        'group.id', 'group_id',
-        'group.name', 'group_name',
-        'session.id', 'session_id',
-        'session.date', 'session_date',
-        'session.topic', 'session_topic',
-        'attendance.status', 'status',
-        'attendance.minutes_late', 'minutes_late',
-        'attendance.check_in_method', 'check_in_method',
-        'attendance.check_in_time', 'check_in_time',
-        'attendance.created_by', 'recorded_by',
-        'attendance.created_at', 'recorded_at',
-      ]);
+  /** List attendance records with student/session/group details, role-scoped. */
+  async listAttendance(
+    filter: AttendanceFilter,
+    userId?: string,
+    roles: string[] = [],
+  ): Promise<Attendance[]> {
+    const qb = this.repo
+      .createQueryBuilder('attendance')
+      .innerJoinAndSelect('attendance.session', 'session')
+      .innerJoinAndSelect('session.group', 'group')
+      .innerJoinAndSelect('attendance.student', 'student')
+      .innerJoinAndSelect('student.user', 'user')
+      .orderBy('session.date', 'DESC')
+      .addOrderBy('session.start_time', 'ASC')
+      .addOrderBy('user.first_name', 'ASC');
 
-    if (params.group_id) qb.andWhere('group.id = :group_id', { group_id: params.group_id });
-    if (params.session_id) qb.andWhere('session.id = :session_id', { session_id: params.session_id });
-    if (params.student_id) qb.andWhere('student.id = :student_id', { student_id: params.student_id });
-    if (params.from) qb.andWhere('session.date >= :from', { from: this.dateStr(params.from) });
-    if (params.to) qb.andWhere('session.date <= :to', { to: this.dateStr(params.to) });
+    if (filter.sessionId) qb.andWhere('attendance.session_id = :sessionId', { sessionId: filter.sessionId });
+    if (filter.groupId) qb.andWhere('group.id = :groupId', { groupId: filter.groupId });
+    if (filter.from) qb.andWhere('session.date >= :from', { from: this.dateKey(filter.from) });
+    if (filter.to) qb.andWhere('session.date <= :to', { to: this.dateKey(filter.to) });
 
-    qb.orderBy('session.date', 'DESC').addOrderBy('student.student_number', 'ASC');
+    // Non-teacher roles (e.g. students) are scoped to their own records inside
+    // the controller, where the student row can be resolved first.
+    const roleSet = new Set((roles ?? []).map((r) => String(r).toLowerCase()));
+    if (!roleSet.has('super_admin') && !roleSet.has('academic') && !roleSet.has('branch_manager')) {
+      if (roleSet.has('teacher')) {
+        qb.andWhere('group.teacher_id = :teacherId', { teacherId: userId });
+      } else {
+        qb.andWhere('attendance.student_id = :studentId', { studentId: userId });
+      }
+    }
 
-    const rows = await qb.getRawMany();
-    return {
-      total: rows.length,
-      records: rows.map((r: any) => ({
-        student_id: r.student_id,
-        student_number: r.student_number,
-        student_name: `${r.student_first_name ?? ''} ${r.student_last_name ?? ''}`.trim() || r.student_number,
-        group_id: r.group_id,
-        group_name: r.group_name,
-        session_id: r.session_id,
-        session_date: r.session_date,
-        session_topic: r.session_topic,
-        status: r.status,
-        minutes_late: Number(r.minutes_late ?? 0),
-        check_in_method: r.check_in_method,
-        check_in_time: r.check_in_time,
-        recorded_by: r.recorded_by,
-        recorded_at: r.recorded_at,
-      })),
+    return qb.getMany();
+  }
+
+  /** CSV export of attendance records for the given filter (role-scoped). */
+  async exportAttendance(
+    filter: AttendanceFilter,
+    userId?: string,
+    roles: string[] = [],
+  ): Promise<string> {
+    const rows = await this.listAttendance(filter, userId, roles);
+    const esc = (v: unknown) => {
+      const s = v == null ? '' : String(v);
+      if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+      return s;
     };
-  }
-
-  async exportHistory(params: {
-    group_id?: string; session_id?: string; student_id?: string;
-    from?: Date; to?: Date;
-  }): Promise<Buffer> {
-    const { records } = await this.getHistory(params);
-
-    const workbook = new Workbook();
-    const worksheet = workbook.addWorksheet('Attendance History');
-
-    worksheet.columns = [
-      { header: 'Student ID', key: 'student_id', width: 30 },
-      { header: 'Student Number', key: 'student_number', width: 20 },
-      { header: 'Student Name', key: 'student_name', width: 30 },
-      { header: 'Group ID', key: 'group_id', width: 30 },
-      { header: 'Group Name', key: 'group_name', width: 30 },
-      { header: 'Session ID', key: 'session_id', width: 30 },
-      { header: 'Session Date', key: 'session_date', width: 20 },
-      { header: 'Session Topic', key: 'session_topic', width: 40 },
-      { header: 'Status', key: 'status', width: 15 },
-      { header: 'Minutes Late', key: 'minutes_late', width: 15 },
-      { header: 'Check-in Method', key: 'check_in_method', width: 20 },
-      { header: 'Check-in Time', key: 'check_in_time', width: 25 },
-      { header: 'Recorded By', key: 'recorded_by', width: 30 },
-      { header: 'Recorded At', key: 'recorded_at', width: 25 },
+    const headers = [
+      'Student',
+      'Student Number',
+      'Session',
+      'Group',
+      'Date',
+      'Status',
+      'Check-in Time',
+      'Check-in Method',
     ];
-
-    worksheet.addRows(records.map((r) => ({
-      ...r,
-      check_in_time: r.check_in_time ? new Date(r.check_in_time).toISOString() : '',
-      recorded_at: r.recorded_at ? new Date(r.recorded_at).toISOString() : '',
-    })));
-
-    const buffer = await workbook.xlsx.writeBuffer();
-    return Buffer.from(buffer);
+    const lines = [headers.join(',')];
+    for (const a of rows) {
+      const s = a as any;
+      const student = s.student ?? {};
+      const user = student.user ?? {};
+      const session = s.session ?? {};
+      const group = session.group ?? {};
+      const name = user
+        ? `${user.first_name ?? ''} ${user.last_name ?? ''}`.trim() || student.student_number || ''
+        : student.student_number || '';
+      lines.push([
+        esc(name),
+        esc(student.student_number ?? ''),
+        esc(session.title ?? session.topic ?? ''),
+        esc(group.name ?? ''),
+        esc(session.date ? this.dateKey(session.date) : ''),
+        esc(s.status),
+        esc(s.check_in_time ? new Date(s.check_in_time).toLocaleString() : ''),
+        esc(s.check_in_method ?? ''),
+      ].join(','));
+    }
+    return lines.join('\n');
   }
+}
+
+export interface AttendanceFilter {
+  sessionId?: string;
+  groupId?: string;
+  from?: Date | string;
+  to?: Date | string;
 }

@@ -145,8 +145,7 @@ export class LmsController {
     @Query('groupId') groupIdParam2?: string,
   ) {
     const groupId = groupIdParam1 || groupIdParam2;
-    if (!groupId) return [];
-    return this.lmsService.findModules(groupId);
+    return this.lmsService.findModules(groupId || '');
   }
 
   @Put('modules/reorder')

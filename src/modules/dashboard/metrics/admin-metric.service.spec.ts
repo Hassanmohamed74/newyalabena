@@ -14,23 +14,6 @@ import { Payment } from '../../../shared/entities/payment.entity';
 import { Attendance } from '../../../shared/entities/attendance.entity';
 import { GroupStudent } from '../../../shared/entities/group-student.entity';
 import { User } from '../../../shared/entities/user.entity';
-import { Employee } from '../../../shared/entities/employee.entity';
-import { LeaveRequest } from '../../../shared/entities/leave-request.entity';
-import { PayrollEntry } from '../../../shared/entities/payroll-entry.entity';
-import { PayrollPeriod } from '../../../shared/entities/payroll-period.entity';
-import { Activity } from '../../../shared/entities/activity.entity';
-import { ActivityRegistration } from '../../../shared/entities/activity-registration.entity';
-import { Certificate } from '../../../shared/entities/certificate.entity';
-import { CertificateTemplate } from '../../../shared/entities/certificate-template.entity';
-import { LmsModule } from '../../../shared/entities/lms-module.entity';
-import { LmsLesson } from '../../../shared/entities/lms-lesson.entity';
-import { Assignment } from '../../../shared/entities/assignment.entity';
-import { Submission } from '../../../shared/entities/submission.entity';
-import { Quiz } from '../../../shared/entities/quiz.entity';
-import { QuizAttempt } from '../../../shared/entities/quiz-attempt.entity';
-import { InventoryItem } from '../../../shared/entities/inventory-item.entity';
-import { StockLevel } from '../../../shared/entities/stock-level.entity';
-import { StockMove } from '../../../shared/entities/stock-move.entity';
 
 const appConfig = new ConfigService();
 appConfig.set('APP_TIME_ZONE', 'Africa/Cairo');
@@ -45,7 +28,6 @@ function createMockRepo<T>(): Record<string, any> {
   qb.leftJoinAndSelect = jest.fn(() => qb);
   qb.leftJoin = jest.fn(() => qb);
   qb.groupBy = jest.fn(() => qb);
-  qb.having = jest.fn(() => qb);
   qb.orderBy = jest.fn(() => qb);
   qb.take = jest.fn(() => qb);
   qb.getRawOne = jest.fn(() => ({ total: 0 }));
@@ -72,24 +54,7 @@ function providers(): any[] {
     { provide: getRepositoryToken(Attendance), useValue: createMockRepo() },
     { provide: getRepositoryToken(GroupStudent), useValue: createMockRepo() },
     { provide: getRepositoryToken(User), useValue: createMockRepo() },
-    { provide: getRepositoryToken(Employee), useValue: createMockRepo() },
-    { provide: getRepositoryToken(LeaveRequest), useValue: createMockRepo() },
-    { provide: getRepositoryToken(PayrollEntry), useValue: createMockRepo() },
-    { provide: getRepositoryToken(PayrollPeriod), useValue: createMockRepo() },
-    { provide: getRepositoryToken(Activity), useValue: createMockRepo() },
-    { provide: getRepositoryToken(ActivityRegistration), useValue: createMockRepo() },
-    { provide: getRepositoryToken(Certificate), useValue: createMockRepo() },
-    { provide: getRepositoryToken(CertificateTemplate), useValue: createMockRepo() },
-    { provide: getRepositoryToken(LmsModule), useValue: createMockRepo() },
-    { provide: getRepositoryToken(LmsLesson), useValue: createMockRepo() },
-    { provide: getRepositoryToken(Assignment), useValue: createMockRepo() },
-    { provide: getRepositoryToken(Submission), useValue: createMockRepo() },
-    { provide: getRepositoryToken(Quiz), useValue: createMockRepo() },
-    { provide: getRepositoryToken(QuizAttempt), useValue: createMockRepo() },
-    { provide: getRepositoryToken(InventoryItem), useValue: createMockRepo() },
-    { provide: getRepositoryToken(StockLevel), useValue: createMockRepo() },
-    { provide: getRepositoryToken(StockMove), useValue: createMockRepo() },
-    { provide: DataSource, useValue: { getRepository: () => createMockRepo() } as any },
+    { provide: DataSource, useValue: {} as any },
     { provide: ConfigService, useValue: appConfig },
   ];
 }

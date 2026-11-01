@@ -18,7 +18,6 @@ export class DashboardController {
   @ApiQuery({ name: 'period', required: false, enum: ['today', '7d', '30d', 'month', 'quarter', 'year', 'custom'] })
   @ApiQuery({ name: 'from', required: false, type: String })
   @ApiQuery({ name: 'to', required: false, type: String })
-  @ApiQuery({ name: 'branch_id', required: false, type: String })
   getStats(@CurrentUser() user: any, @Query() dto: DashboardQueryDto) {
     return this.service.getStats(user, dto);
   }
@@ -29,7 +28,6 @@ export class DashboardController {
   @ApiQuery({ name: 'period', required: false, enum: ['today', '7d', '30d', 'month', 'quarter', 'year', 'custom'] })
   @ApiQuery({ name: 'from', required: false, type: String })
   @ApiQuery({ name: 'to', required: false, type: String })
-  @ApiQuery({ name: 'branch_id', required: false, type: String })
   getFinance(@CurrentUser() user: any, @Query() dto: DashboardQueryDto) {
     return this.service.getFinanceMetrics(user, dto);
   }
@@ -40,7 +38,6 @@ export class DashboardController {
   @ApiQuery({ name: 'period', required: false, enum: ['today', '7d', '30d', 'month', 'quarter', 'year', 'custom'] })
   @ApiQuery({ name: 'from', required: false, type: String })
   @ApiQuery({ name: 'to', required: false, type: String })
-  @ApiQuery({ name: 'branch_id', required: false, type: String })
   getSales(@CurrentUser() user: any, @Query() dto: DashboardQueryDto) {
     return this.service.getSalesMetrics(user, dto);
   }
@@ -51,7 +48,6 @@ export class DashboardController {
   @ApiQuery({ name: 'period', required: false, enum: ['today', '7d', '30d', 'month', 'quarter', 'year', 'custom'] })
   @ApiQuery({ name: 'from', required: false, type: String })
   @ApiQuery({ name: 'to', required: false, type: String })
-  @ApiQuery({ name: 'branch_id', required: false, type: String })
   getAcademic(@CurrentUser() user: any, @Query() dto: DashboardQueryDto) {
     return this.service.getAcademicMetrics(user, dto);
   }
@@ -62,7 +58,6 @@ export class DashboardController {
   @ApiQuery({ name: 'period', required: false, enum: ['today', '7d', '30d', 'month', 'quarter', 'year', 'custom'] })
   @ApiQuery({ name: 'from', required: false, type: String })
   @ApiQuery({ name: 'to', required: false, type: String })
-  @ApiQuery({ name: 'branch_id', required: false, type: String })
   @ApiQuery({ name: 'teacher_id', required: false, type: String, description: 'super_admin/branch_manager preview only' })
   getTeacher(@CurrentUser() user: any, @Query() dto: DashboardQueryDto) {
     return this.service.getTeacherMetrics(user, dto);
@@ -74,7 +69,6 @@ export class DashboardController {
   @ApiQuery({ name: 'period', required: false, enum: ['today', '7d', '30d', 'month', 'quarter', 'year', 'custom'] })
   @ApiQuery({ name: 'from', required: false, type: String })
   @ApiQuery({ name: 'to', required: false, type: String })
-  @ApiQuery({ name: 'branch_id', required: false, type: String })
   @ApiQuery({ name: 'student_id', required: false, type: String, description: 'super_admin/branch_manager preview only' })
   getStudent(@CurrentUser() user: any, @Query() dto: DashboardQueryDto) {
     return this.service.getStudentMetrics(user, dto);
@@ -86,7 +80,6 @@ export class DashboardController {
   @ApiQuery({ name: 'period', required: false, enum: ['today', '7d', '30d', 'month', 'quarter', 'year', 'custom'] })
   @ApiQuery({ name: 'from', required: false, type: String })
   @ApiQuery({ name: 'to', required: false, type: String })
-  @ApiQuery({ name: 'branch_id', required: false, type: String })
   getHr(@CurrentUser() user: any, @Query() dto: DashboardQueryDto) {
     return this.service.getHrMetrics(user, dto);
   }

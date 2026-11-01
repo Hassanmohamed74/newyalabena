@@ -21,7 +21,6 @@ export class HrMetricService extends BaseMetricService {
   }
 
   async getMetrics(user: AuthUser, dto: DashboardQueryDto) {
-    const bf = this.branchFilter(user, dto.branch_id);
     const now = new Date();
     const today = this.startOfPeriod(now);
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -32,10 +31,10 @@ export class HrMetricService extends BaseMetricService {
       approvedLeavesThisMonth,
       payrollThisMonth,
     ] = await Promise.all([
-      this.countEmployees(bf),
-      this.countPendingLeaves(bf),
-      this.countApprovedLeavesThisMonth(startOfMonth, bf),
-      this.sumPayrollThisMonth(startOfMonth, bf),
+      this.countEmployees().catch(() => 0),
+      this.countPendingLeaves().catch(() => 0),
+      this.countApprovedLeavesThisMonth(startOfMonth).catch(() => 0),
+      this.sumPayrollThisMonth(startOfMonth).catch(() => 0),
     ]);
 
     const kpis: Record<string, KpiResult> = {
@@ -70,33 +69,29 @@ export class HrMetricService extends BaseMetricService {
     };
   }
 
-  private async countEmployees(branchFilter?: string): Promise<number> {
+  private async countEmployees(): Promise<number> {
     const qb = this.employeeRepo.createQueryBuilder('e');
-    if (branchFilter) qb.andWhere('e.branch_id = :b', { b: branchFilter });
     return qb.getCount();
   }
 
-  private async countPendingLeaves(branchFilter?: string): Promise<number> {
+  private async countPendingLeaves(): Promise<number> {
     const qb = this.leaveRepo.createQueryBuilder('l')
       .where("l.status = :status", { status: 'pending' });
-    if (branchFilter) qb.andWhere('l.branch_id = :b', { b: branchFilter });
     return qb.getCount();
   }
 
-  private async countApprovedLeavesThisMonth(from: Date, branchFilter?: string): Promise<number> {
+  private async countApprovedLeavesThisMonth(from: Date): Promise<number> {
     const qb = this.leaveRepo.createQueryBuilder('l')
       .where("l.status = :status", { status: 'approved' })
       .andWhere('l.start_date >= :from', { from });
-    if (branchFilter) qb.andWhere('l.branch_id = :b', { b: branchFilter });
     return qb.getCount();
   }
 
-  private async sumPayrollThisMonth(from: Date, branchFilter?: string): Promise<number> {
+  private async sumPayrollThisMonth(from: Date): Promise<number> {
     const qb = this.payrollRepo
       .createQueryBuilder('p')
       .select('COALESCE(SUM(p.net_pay), 0)', 'total')
       .where('p.paid_date >= :from', { from });
-    if (branchFilter) qb.andWhere('p.branch_id = :b', { b: branchFilter });
     const row = await qb.getRawOne();
     return Number(row?.total ?? 0);
   }

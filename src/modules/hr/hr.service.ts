@@ -61,7 +61,9 @@ export class HrService {
     const b = this.branchScope(actor);
     if (!b) return;
     const user = emp.user ?? (await this.userRepo.findOne({ where: { id: emp.user_id } }));
-    if (user?.branch_id !== b) throw new ForbiddenException('Employee belongs to another branch');
+    if (user?.branch_id && user.branch_id !== b) {
+      throw new ForbiddenException('Cross-branch access denied');
+    }
   }
 
   private rethrowUnique(err: any, msg: string): never {

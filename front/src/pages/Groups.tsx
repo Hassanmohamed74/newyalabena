@@ -6,7 +6,6 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { groupsApi } from "@/api/groups";
 import { coursesApi } from "@/api/courses";
-import { branchesApi } from "@/api/branches";
 import { usersApi } from "@/api/users";
 import { studentsApi } from "@/api/students";
 import { DataTable } from "@/components/common/DataTable";
@@ -19,7 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { useConfirm } from "@/components/ui/confirm-dialog";
-import type { Group, Course, Branch, User, GroupSchedule } from "@/types";
+import type { Group, Course, User, GroupSchedule } from "@/types";
 import {
   Plus, X, Pencil, Trash2, Eye, ChevronLeft, CalendarDays,
   Clock, AlertTriangle, MapPin, Video, Monitor, UserCog, UserPlus
@@ -32,7 +31,6 @@ const daysOfWeek = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Fri
 const groupSchema = z.object({
   name: z.string().min(1, "Name is required"),
   courseId: z.string().min(1, "Course is required"),
-  branchId: z.string().min(1, "Branch is required"),
   teacherId: z.string().min(1, "Teacher is required"),
   substitute_teacher_id: z.string().optional(),
   capacity: z.coerce.number().min(1, "Capacity must be at least 1"),
@@ -99,6 +97,10 @@ export default function GroupsPage() {
   const [scheduleForm, setScheduleForm] = useState({ day_of_week: 0, start_time: "", end_time: "" });
   const [formWeekdays, setFormWeekdays] = useState<number[]>([]);
   const [conflictWarning, setConflictWarning] = useState<string[]>([]);
+  const [pendingUpdate, setPendingUpdate] = useState<{
+    id: string;
+    dto: Partial<Group>;
+  } | null>(null);
 
   // ── Manage Teacher modal state (direct assignment, conflict/force flow) ──
   const [teacherTarget, setTeacherTarget] = useState<Group | null>(null);
@@ -123,7 +125,6 @@ export default function GroupsPage() {
   });
 
   const { data: courses } = useQuery({ queryKey: ["courses"], queryFn: coursesApi.findAll });
-  const { data: branches } = useQuery({ queryKey: ["branches"], queryFn: branchesApi.findAll });
   const { data: teachers } = useQuery({ queryKey: ["users", "teachers"], queryFn: () => usersApi.findAll({ roleId: "teacher" }) });
 
   const {
@@ -139,6 +140,7 @@ export default function GroupsPage() {
       mode: "in_person",
       status: "upcoming",
       capacity: 20,
+      schedule_weekdays: [],
     },
   });
 
@@ -170,15 +172,56 @@ export default function GroupsPage() {
   });
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, dto }: { id: string; dto: Partial<Group> }) => groupsApi.update(id, dto),
+    mutationFn: ({
+      id,
+      dto,
+    }: { id: string; dto: Partial<Group> & { cascade_prune_sessions?: boolean } }) => groupsApi.update(id, dto),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["groups"] });
       if (selectedGroupId) queryClient.invalidateQueries({ queryKey: ["group", selectedGroupId] });
       toast({ title: "Group updated successfully" });
       closeForm();
+      setPendingUpdate(null);
     },
     onError: (err: any) => {
       console.error("Group update error:", err);
+      const data = err?.response?.data;
+      const messageObj = data?.message;
+
+      // Collect details from either nested (message.details) or top-level (data.details).
+      const nestedDetails =
+        messageObj &&
+        typeof messageObj === "object" &&
+        !Array.isArray(messageObj) &&
+        Array.isArray(messageObj.details)
+          ? messageObj.details
+          : [];
+      const topLevelDetails = Array.isArray(data?.details)
+        ? data.details
+        : [];
+      const allDetails = [...nestedDetails, ...topLevelDetails];
+      const hasDetails = allDetails.length > 0;
+
+      // Structured 400: sessions fall outside the new date range.
+      if (hasDetails && pendingUpdate) {
+        const count = allDetails.length;
+        confirm({
+          title: "Sessions Outside Date Range",
+          description:
+            `Changing the group dates would leave ${count} existing session(s) outside the new start/end range.` +
+            (messageObj?.message ? ` ${messageObj.message}` : ""),
+          confirmLabel: "Proceed & Prune Sessions",
+          onConfirm: () => {
+            updateMutation.mutate({
+              id: pendingUpdate.id,
+              dto: { ...pendingUpdate.dto, cascade_prune_sessions: true },
+            });
+            setPendingUpdate(null);
+          },
+        });
+        return;
+      }
+
       toast({ variant: "destructive", title: "Error", description: err.message });
     },
   });
@@ -715,7 +758,6 @@ export default function GroupsPage() {
     const dto = {
       name: data.name,
       courseId: data.courseId,
-      branchId: data.branchId,
       teacherId: data.teacherId,
       substitute_teacher_id: data.substitute_teacher_id || undefined,
       capacity: Number(data.capacity),
@@ -726,9 +768,11 @@ export default function GroupsPage() {
       zoom_link: data.zoom_link?.trim() || null,
     };
 
+    console.log("Submitting group data:", data);
     console.log("Submitting Payload:", dto);
 
     if (editingId) {
+      setPendingUpdate({ id: editingId, dto });
       updateMutation.mutate({ id: editingId, dto });
     } else {
       try {
@@ -797,7 +841,6 @@ export default function GroupsPage() {
     setShowForm(true);
     setValue("name", group.name);
     setValue("courseId", group.courseId || "");
-    setValue("branchId", group.branchId || "");
     setValue("teacherId", group.teacherId || "");
     setValue("substitute_teacher_id", group.substitute_teacher_id || "");
     setValue("capacity", group.capacity || 20);
@@ -844,11 +887,6 @@ export default function GroupsPage() {
       key: "course",
       header: "Course",
       render: (row: Group) => <span className="text-sm">{row.course?.name || row.courseId || "—"}</span>,
-    },
-    {
-      key: "branch",
-      header: "Branch",
-      render: (row: Group) => <span className="text-xs text-muted-foreground">{row.branch?.name || row.branchId || "—"}</span>,
     },
     {
       key: "teacher",
@@ -1019,7 +1057,6 @@ export default function GroupsPage() {
         <div className="grid gap-4 md:grid-cols-4">
           <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Students</p><p className="text-lg font-bold">{selectedGroup.student_count ?? 0} / {selectedGroup.capacity ?? "—"}</p></CardContent></Card>
           <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Teacher</p><p className="text-lg font-bold">{selectedGroup.teacher ? `${selectedGroup.teacher.first_name} ${selectedGroup.teacher.last_name}` : "Unassigned"}</p></CardContent></Card>
-          <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Branch</p><p className="text-lg font-bold">{selectedGroup.branch?.name || selectedGroup.branchId || "—"}</p></CardContent></Card>
           <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">Mode</p><p className="text-lg font-bold capitalize">{selectedGroup.mode || "in_person"}</p></CardContent></Card>
         </div>
 
@@ -1144,8 +1181,7 @@ export default function GroupsPage() {
               <CardContent className="p-4 space-y-2 text-sm">
                 <div className="grid grid-cols-2 gap-2">
                   <span className="text-muted-foreground">Course:</span><span>{selectedGroup.course?.name || "—"}</span>
-                  <span className="text-muted-foreground">Branch:</span><span>{selectedGroup.branch?.name || "—"}</span>
-                  <span className="text-muted-foreground">Teacher:</span><span>{selectedGroup.teacher ? `${selectedGroup.teacher.first_name} ${selectedGroup.teacher.last_name}` : "—"}</span>
+                                    <span className="text-muted-foreground">Teacher:</span><span>{selectedGroup.teacher ? `${selectedGroup.teacher.first_name} ${selectedGroup.teacher.last_name}` : "—"}</span>
                   <span className="text-muted-foreground">Substitute:</span><span>{selectedGroup.substitute_teacher ? `${selectedGroup.substitute_teacher.first_name} ${selectedGroup.substitute_teacher.last_name}` : "—"}</span>
                   <span className="text-muted-foreground">Capacity:</span><span>{selectedGroup.capacity || "—"}</span>
                   <span className="text-muted-foreground">Mode:</span><span className="capitalize">{selectedGroup.mode || "in_person"}</span>
@@ -1193,7 +1229,12 @@ export default function GroupsPage() {
         <Card>
           <CardHeader><CardTitle>{editingId ? "Edit Group" : "Create New Group"}</CardTitle></CardHeader>
           <CardContent>
-            <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+            <form
+              onSubmit={handleSubmit(onSubmit, (errors) =>
+                console.log("Form validation failed:", errors)
+              )}
+              className="space-y-4"
+            >
               <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                 <div className="space-y-2">
                   <Label>Name *</Label>
@@ -1208,18 +1249,6 @@ export default function GroupsPage() {
                     {courses?.map((c: Course) => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
                   {errors.courseId && <p className="text-sm text-destructive">{errors.courseId.message}</p>}
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Branch *</Label>
-                  <select 
-                    {...register("branchId")} 
-                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                  >
-                    <option value="">Select branch</option>
-                    {branches?.map((b: Branch) => <option key={b.id} value={b.id}>{b.name}</option>)}
-                  </select>
-                  {errors.branchId && <p className="text-sm text-destructive">{errors.branchId.message}</p>}
                 </div>
 
                 <div className="space-y-2">
@@ -1285,11 +1314,13 @@ export default function GroupsPage() {
                           value={i}
                           onChange={(e) => {
                             const val = e.target.checked;
-                            setFormWeekdays((prev) =>
-                              val
-                                ? [...prev, i]
-                                : prev.filter((x) => x !== i)
-                            );
+                            const updated = val
+                              ? [...formWeekdays, i]
+                              : formWeekdays.filter((x) => x !== i);
+                            setFormWeekdays(updated);
+                            setValue("schedule_weekdays", updated, {
+                              shouldValidate: true,
+                            });
                           }}
                           defaultChecked={formWeekdays.includes(i)}
                           className="rounded border-input bg-background text-sm"

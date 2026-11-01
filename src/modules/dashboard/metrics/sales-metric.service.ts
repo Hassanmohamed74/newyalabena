@@ -19,7 +19,6 @@ export class SalesMetricService extends BaseMetricService {
   }
 
   async getMetrics(user: AuthUser, dto: DashboardQueryDto) {
-    const bf = this.branchFilter(user, dto.branch_id);
     const now = new Date();
     const today = this.startOfPeriod(now);
     const prevDay = new Date(Date.now() - 86_400_000);
@@ -31,11 +30,11 @@ export class SalesMetricService extends BaseMetricService {
       prevTotalStudents,
       newLeadsToday,
     ] = await Promise.all([
-      this.countLeads(bf),
-      this.countLeadsFrom(prevDay, bf),
-      this.countStudents(bf),
-      this.countStudentsFrom(prevDay, bf),
-      this.countLeadsFrom(today, bf),
+      this.countLeads().catch(() => 0),
+      this.countLeadsFrom(prevDay).catch(() => 0),
+      this.countStudents().catch(() => 0),
+      this.countStudentsFrom(prevDay).catch(() => 0),
+      this.countLeadsFrom(today).catch(() => 0),
     ]);
 
     const kpis: Record<string, KpiResult> = {
@@ -68,29 +67,25 @@ export class SalesMetricService extends BaseMetricService {
     };
   }
 
-  private async countLeads(branchFilter?: string): Promise<number> {
+  private async countLeads(): Promise<number> {
     const qb = this.leadRepo.createQueryBuilder('l');
-    if (branchFilter) qb.where('l.branch_id = :b', { b: branchFilter });
     return qb.getCount();
   }
 
-  private async countLeadsFrom(fromDate: Date, branchFilter?: string): Promise<number> {
+  private async countLeadsFrom(fromDate: Date): Promise<number> {
     const qb = this.leadRepo.createQueryBuilder('l')
       .where('l.created_at >= :d', { d: fromDate });
-    if (branchFilter) qb.andWhere('l.branch_id = :b', { b: branchFilter });
     return qb.getCount();
   }
 
-  private async countStudents(branchFilter?: string): Promise<number> {
+  private async countStudents(): Promise<number> {
     const qb = this.studentRepo.createQueryBuilder('s');
-    if (branchFilter) qb.where('s.branch_id = :b', { b: branchFilter });
     return qb.getCount();
   }
 
-  private async countStudentsFrom(fromDate: Date, branchFilter?: string): Promise<number> {
+  private async countStudentsFrom(fromDate: Date): Promise<number> {
     const qb = this.studentRepo.createQueryBuilder('s')
       .where('s.created_at >= :d', { d: fromDate });
-    if (branchFilter) qb.andWhere('s.branch_id = :b', { b: branchFilter });
     return qb.getCount();
   }
 }

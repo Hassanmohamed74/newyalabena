@@ -93,10 +93,8 @@ export class PeriodResolver {
   private dayRange(today: Date, daysBack: number, bucket: Bucket): ResolvedPeriod {
     const from = today;
     const to = this.endOfDay(today);
-    const prevFrom = new Date(from);
-    prevFrom.setDate(from.getDate() - daysBack);
-    const prevTo = new Date(from);
-    prevTo.setDate(prevTo.getDate() - 1);
+    const prevFrom = new Date(from.getTime() - daysBack * 86_400_000);
+    const prevTo = new Date(from.getTime() - 86_400_000);
     return { from, to, previousFrom: prevFrom, previousTo: this.endOfDay(prevTo), bucket };
   }
 }

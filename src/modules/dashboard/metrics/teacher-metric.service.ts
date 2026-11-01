@@ -24,7 +24,6 @@ export class TeacherMetricService extends BaseMetricService {
 
   async getMetrics(user: AuthUser, dto: DashboardQueryDto) {
     const userId = user.id;
-    const bf = this.branchFilter(user, dto.branch_id);
     const now = new Date();
     const today = this.startOfPeriod(now);
 
@@ -37,13 +36,13 @@ export class TeacherMetricService extends BaseMetricService {
       upcomingSessions,
       pendingAttendance,
     ] = await Promise.all([
-      this.countMyGroups(userId, bf),
-      this.countMySessionsToday(userId, today, bf),
-      this.countMySessionsThisWeek(userId, today, bf),
-      this.countMyStudents(userId, bf),
-      this.getAttendanceToday(userId, today, bf),
-      this.getUpcomingSessions(userId, bf, 5),
-      this.getPendingAttendance(userId, today, bf),
+      this.countMyGroups(userId).catch(() => 0),
+      this.countMySessionsToday(userId, today).catch(() => 0),
+      this.countMySessionsThisWeek(userId, today).catch(() => 0),
+      this.countMyStudents(userId).catch(() => 0),
+      this.getAttendanceToday(userId, today).catch(() => ({ present: 0, absent: 0, late: 0 })),
+      this.getUpcomingSessions(userId, 5).catch(() => []),
+      this.getPendingAttendance(userId, today).catch(() => 0),
     ]);
 
     const kpis: Record<string, KpiResult> = {
@@ -85,26 +84,24 @@ export class TeacherMetricService extends BaseMetricService {
     };
   }
 
-  private async countMyGroups(userId: string, branchFilter?: string): Promise<number> {
+  private async countMyGroups(userId: string): Promise<number> {
     const qb = this.groupRepo
       .createQueryBuilder('g')
       .where('g.teacher_id = :uid OR g.substitute_teacher_id = :uid', { uid: userId });
-    if (branchFilter) qb.andWhere('g.branch_id = :b', { b: branchFilter });
     return qb.getCount();
   }
 
-  private async countMySessionsToday(userId: string, today: Date, branchFilter?: string): Promise<number> {
+  private async countMySessionsToday(userId: string, today: Date): Promise<number> {
     const qb = this.sessionRepo
       .createQueryBuilder('s')
       .innerJoin('s.group', 'g')
       .where('(g.teacher_id = :uid OR g.substitute_teacher_id = :uid)', { uid: userId })
       .andWhere('s.date = :d', { d: today })
       .andWhere('s.cancelled_at IS NULL');
-    if (branchFilter) qb.andWhere('g.branch_id = :b', { b: branchFilter });
     return qb.getCount();
   }
 
-  private async countMySessionsThisWeek(userId: string, today: Date, branchFilter?: string): Promise<number> {
+  private async countMySessionsThisWeek(userId: string, today: Date): Promise<number> {
     const startOfWeek = new Date(today);
     startOfWeek.setDate(today.getDate() - today.getDay());
     const endOfWeek = new Date(startOfWeek);
@@ -116,21 +113,19 @@ export class TeacherMetricService extends BaseMetricService {
       .where('(g.teacher_id = :uid OR g.substitute_teacher_id = :uid)', { uid: userId })
       .andWhere('s.date BETWEEN :start AND :end', { start: startOfWeek, end: endOfWeek })
       .andWhere('s.cancelled_at IS NULL');
-    if (branchFilter) qb.andWhere('g.branch_id = :b', { b: branchFilter });
     return qb.getCount();
   }
 
-  private async countMyStudents(userId: string, branchFilter?: string): Promise<number> {
+  private async countMyStudents(userId: string): Promise<number> {
     const qb = this.gsRepo
       .createQueryBuilder('gs')
       .innerJoin('gs.group', 'g')
       .where('(g.teacher_id = :uid OR g.substitute_teacher_id = :uid)', { uid: userId })
       .andWhere("gs.status = :status", { status: 'active' });
-    if (branchFilter) qb.andWhere('g.branch_id = :b', { b: branchFilter });
     return qb.getCount();
   }
 
-  private async getAttendanceToday(userId: string, today: Date, branchFilter?: string) {
+  private async getAttendanceToday(userId: string, today: Date) {
     const qb = this.attendanceRepo
       .createQueryBuilder('a')
       .select("a.status", 'status')
@@ -140,7 +135,6 @@ export class TeacherMetricService extends BaseMetricService {
       .where('(g.teacher_id = :uid OR g.substitute_teacher_id = :uid)', { uid: userId })
       .andWhere('s.date = :d', { d: today })
       .groupBy('a.status');
-    if (branchFilter) qb.andWhere('g.branch_id = :b', { b: branchFilter });
     const rows = await qb.getRawMany();
     const summary = { present: 0, absent: 0, late: 0 };
     for (const row of rows) {
@@ -152,7 +146,7 @@ export class TeacherMetricService extends BaseMetricService {
     return summary;
   }
 
-  private async getUpcomingSessions(userId: string, branchFilter?: string, limit: number = 5) {
+  private async getUpcomingSessions(userId: string, limit: number = 5) {
     const qb = this.sessionRepo
       .createQueryBuilder('s')
       .leftJoinAndSelect('s.group', 'g')
@@ -161,18 +155,16 @@ export class TeacherMetricService extends BaseMetricService {
       .andWhere('s.cancelled_at IS NULL')
       .orderBy('s.date', 'ASC')
       .take(limit);
-    if (branchFilter) qb.andWhere('g.branch_id = :b', { b: branchFilter });
     return qb.getMany();
   }
 
-  private async getPendingAttendance(userId: string, today: Date, branchFilter?: string): Promise<number> {
+  private async getPendingAttendance(userId: string, today: Date): Promise<number> {
     const qb = this.sessionRepo
       .createQueryBuilder('s')
       .innerJoin('s.group', 'g')
       .where('(g.teacher_id = :uid OR g.substitute_teacher_id = :uid)', { uid: userId })
       .andWhere('s.date = :d', { d: today })
       .andWhere('s.cancelled_at IS NULL');
-    if (branchFilter) qb.andWhere('g.branch_id = :b', { b: branchFilter });
     return qb.getCount();
   }
 }

@@ -1,21 +1,26 @@
 import { useTranslation } from "react-i18next";
 import { useAuthStore } from "@/store/authStore";
+import { useQuery } from "@tanstack/react-query";
+import { branchesApi } from "@/api/branches";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { cn } from "@/lib/utils";
 
 interface BranchSelectProps {
-  className?: string;
-  branches?: { id: string; name: string }[];
+  triggerClassName?: string;
   onChange?: (branchId: string | undefined) => void;
 }
 
-export function BranchSelect({ className, branches: branchesProp = [], onChange }: BranchSelectProps) {
+export function BranchSelect({ triggerClassName, onChange }: BranchSelectProps) {
   const { t } = useTranslation("dashboard");
   const user = useAuthStore((s) => s.user);
-  const branches = branchesProp.length > 0 ? branchesProp : ((user as any)?.branches ?? []);
   const currentBranch = user?.branch_id;
 
   const isSuperAdmin = Array.isArray(user?.roles) && user.roles.includes("super_admin");
+
+  const { data: branches = [] } = useQuery({
+    queryKey: ["branches"],
+    queryFn: () => branchesApi.findAll(),
+    enabled: isSuperAdmin,
+  });
 
   if (!isSuperAdmin) return null;
 
@@ -24,13 +29,15 @@ export function BranchSelect({ className, branches: branchesProp = [], onChange 
       onValueChange={(v) => {
         onChange?.(v === "" ? undefined : v);
       }}
+      defaultValue={currentBranch ?? ""}
     >
-      <SelectTrigger className={cn("w-[200px]", className)}>
-        <SelectValue placeholder={currentBranch ? branches.find((b: any) => b.id === currentBranch)?.name ?? t("selectBranch") : t("selectBranch")} />
+      <SelectTrigger className={triggerClassName ?? "w-[200px]"}>
+
+        <SelectValue placeholder={currentBranch ? branches.find((b) => b.id === currentBranch)?.name ?? t("selectBranch") : t("selectBranch")} />
       </SelectTrigger>
       <SelectContent>
         <SelectItem value="">{t("allBranches")}</SelectItem>
-        {branches.map((b: any) => (
+        {branches.map((b) => (
           <SelectItem key={b.id} value={b.id}>
             {b.name}
           </SelectItem>

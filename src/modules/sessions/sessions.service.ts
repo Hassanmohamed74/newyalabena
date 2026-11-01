@@ -1,10 +1,17 @@
-import { Injectable, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Session } from '../../shared/entities/session.entity';
 import { Group } from '../../shared/entities/group.entity';
 import { Student } from '../../shared/entities/student.entity';
+import { ApplyZoomLinkDto } from './dto/apply-zoom-link.dto';
 import { Attendance } from '../../shared/entities/attendance.entity';
 import { AttendanceStatus } from '../../common/enums/attendance-status.enum';
 import { acquireSchedulingLocks } from '../../common/utils/scheduling-locks.util';
@@ -212,45 +219,55 @@ export class SessionsService {
       query.andWhere('group.id = :groupId', { groupId });
     }
 
-    // Students only see sessions of groups they belong to (membership via
-    // `group_students` or `enrollments`). Staff roles keep the full list —
-    // @Roles on the controller already guarantees which of these can arrive.
+    // Role-based scoping:
+    //  - super_admin / academic / branch_manager → see every session.
+    //  - teacher → only sessions of groups they are assigned to teach
+    //    (group.teacher_id = the teacher's user id).
+    //  - student → only sessions of groups they belong to.
     const roles = (user?.roles ?? []).map((role) => String(role).toLowerCase());
-    const isStaff = roles.some((role) =>
-      ['super_admin', 'academic', 'branch_manager', 'teacher'].includes(role),
+    const isGlobalStaff = roles.some((role) =>
+      ['super_admin', 'academic', 'branch_manager'].includes(role),
     );
-    if (user && !isStaff) {
-      const studentRepo = this.repo.manager.getRepository(Student);
+    const isTeacher = roles.includes('teacher');
+
+    if (user && !isGlobalStaff) {
       const userId = user.id ?? user.userId;
-      const student = userId
-        ? await studentRepo.findOne({ where: { user_id: userId } })
-        : null;
-      if (!student) return [];
+      if (isTeacher) {
+        // Teachers only see sessions of their own assigned groups.
+        query.andWhere('group.teacher_id = :userId', { userId });
+      } else {
+        // Students only see sessions of groups they belong to (membership via
+        // `group_students` or `enrollments`).
+        const studentRepo = this.repo.manager.getRepository(Student);
+        const student = userId
+          ? await studentRepo.findOne({ where: { user_id: userId } })
+          : null;
+        if (!student) return [];
 
-      // Column/table qualifications matter here:
-      //  - `group_students.status` is a CHECK-constrained lowercase varchar →
-      //    a direct compare is exact and keeps idx_gs_status usable.
-      //  - `enrollments.status` is the Postgres ENUM `enrollment_status`.
-      //    LOWER() has no enum overload (only text), which produced
-      //    `function lower(enrollment_status) does not exist`. Compare on the
-      //    text projection instead; this also matches both casings that
-      //    circulate in this codebase ('active' from the TS enum vs 'ACTIVE'
-      //    written by enrollments.service.create — same rationale as
-      //    chat.service), whereas a raw enum-literal comparison would fail at
-      //    parse time whenever a label is absent from the live enum.
-      const rows: { groupId: string }[] = await this.repo.query(
-        `SELECT gs.group_id AS "groupId" FROM group_students gs
-           WHERE gs.student_id = $1 AND gs.status = 'active'
-         UNION
-         SELECT e.group_id AS "groupId" FROM enrollments e
-           WHERE e.student_id = $1 AND LOWER(CAST(e.status AS TEXT)) = 'active'`,
-        [student.id],
-      );
-      const groupIds = rows.map((row) => row.groupId).filter(Boolean);
-      if (!groupIds.length) return [];
-      query.andWhere('group.id IN (:...groupIds)', { groupIds });
+        // Column/table qualifications matter here:
+        //  - `group_students.status` is a CHECK-constrained lowercase varchar →
+        //    a direct compare is exact and keeps idx_gs_status usable.
+        //  - `enrollments.status` is the Postgres ENUM `enrollment_status`.
+        //    LOWER() has no enum overload (only text), which produced
+        //    `function lower(enrollment_status) does not exist`. Compare on the
+        //    text projection instead; this also matches both casings that
+        //    circulate in this codebase ('active' from the TS enum vs 'ACTIVE'
+        //    written by enrollments.service.create — same rationale as
+        //    chat.service), whereas a raw enum-literal comparison would fail at
+        //    parse time whenever a label is absent from the live enum.
+        const rows: { groupId: string }[] = await this.repo.query(
+          `SELECT gs.group_id AS "groupId" FROM group_students gs
+             WHERE gs.student_id = $1 AND gs.status = 'active'
+           UNION
+           SELECT e.group_id AS "groupId" FROM enrollments e
+             WHERE e.student_id = $1 AND LOWER(CAST(e.status AS TEXT)) = 'active'`,
+          [student.id],
+        );
+        const groupIds = rows.map((row) => row.groupId).filter(Boolean);
+        if (!groupIds.length) return [];
+        query.andWhere('group.id IN (:...groupIds)', { groupIds });
+      }
     }
-
     const sessions = await query.getMany();
     // Resolve the fixed per-group meeting URL at read time: sessions created
     // before activation logic (or with a cleared link) fall back to the
@@ -345,18 +362,59 @@ export class SessionsService {
     return this.repo.save(session);
   }
 
+  /**
+   * Apply Zoom link fields to a session, optionally propagating to all
+   * sessions in the same group when `apply_to_all_group_sessions` is true.
+   * Safe null-checks: only fields explicitly provided in the DTO are updated.
+   */
+  async applyZoomLink(
+    sessionId: string,
+    dto: ApplyZoomLinkDto,
+  ): Promise<Session | Session[]> {
+    const session = await this.findOne(sessionId);
+
+    const updates: Partial<Session> = {};
+    if (dto.zoom_join_url !== undefined) updates.zoom_join_url = dto.zoom_join_url;
+    if (dto.zoom_meeting_id !== undefined) updates.zoom_meeting_id = dto.zoom_meeting_id;
+    if (Object.keys(updates).length === 0) {
+      return session;
+    }
+
+    if (dto.apply_to_all_group_sessions === true && session.group_id) {
+      const allSessions = await this.repo.find({
+        where: { group_id: session.group_id },
+      });
+      const updated: Session[] = [];
+      for (const s of allSessions) {
+        Object.assign(s, updates);
+        updated.push(await this.repo.save(s));
+      }
+      return updated;
+    }
+
+    Object.assign(session, updates);
+    return this.repo.save(session);
+  }
+
   async remove(id: string): Promise<void> {
     const session = await this.findOne(id);
     await this.repo.remove(session);
   }
 
-  async getAttendance(id: string) {
+  async getAttendance(id: string, teacherId?: string) {
     const session = await this.repo.findOne({
       where: { id },
-      select: ['id'],
+      relations: ['group'],
     });
     if (!session) {
       throw new NotFoundException(`Session with ID ${id} not found`);
+    }
+    // Teacher ownership restriction: teachers can only view attendance of
+    // sessions belonging to groups they are assigned to teach.
+    if (teacherId && session.group && session.group.teacher_id !== teacherId) {
+      throw new ForbiddenException(
+        'You can only view attendance for sessions of groups you are assigned to teach.',
+      );
     }
     return this.attendances
       .createQueryBuilder('attendance')

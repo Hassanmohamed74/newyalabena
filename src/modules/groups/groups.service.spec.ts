@@ -9,6 +9,7 @@ import {
 import { GroupsService } from './groups.service';
 import { Group } from '../../shared/entities/group.entity';
 import { GroupSchedule } from '../../shared/entities/group-schedule.entity';
+import { Session } from '../../shared/entities/session.entity';
 import { User } from '../../shared/entities/user.entity';
 import { Student } from '../../shared/entities/student.entity';
 import { EnrollmentsService } from '../enrollments/enrollments.service';
@@ -68,6 +69,7 @@ describe('GroupsService', () => {
         GroupsService,
         { provide: getRepositoryToken(Group), useFactory: mockRepo },
         { provide: getRepositoryToken(GroupSchedule), useFactory: mockRepo },
+        { provide: getRepositoryToken(Session), useFactory: mockRepo },
         { provide: getRepositoryToken(User), useFactory: mockRepo },
         { provide: getRepositoryToken(Student), useFactory: mockRepo },
         {
